@@ -1,0 +1,267 @@
+---
+title: "Aula 2 - Meireles"
+author: "Pedro Schmalz"
+date: "2022-08-24"
+output: html_document
+---
+
+```{r, echo=FALSE}
+knitr::opts_chunk$set(echo=F, error=FALSE, warning=FALSE, message=FALSE)
+```
+
+```{r}
+#Pacotes utilizados
+
+if (!require("pacman")) install.packages("pacman"); # O Pacote "pacman" permite carregar os pacotes com menos código
+
+# Carregando os pacotes
+
+pacman::p_load("tidyverse",  "dplyr", "tidylog", "DT", "datasets", "ggplot2", "readxl", "haven", "knitr", "reshape2", "broom", "modelr", "lubridate", "stargazer", "jtools", "purrr", "mlr3", "mlr3viz", "mlr3learners", "GGally")
+```
+
+
+# 1 - Modelos
+
+Para esse exercício, será necessário carregar alguns dados climáticos de São Bernardo do Campo (SP):
+
+```{r}
+link <- "https://raw.githubusercontent.com/jacobwright32/Web_Scraper_AI_Core_Project/bb4865ae568e23ab8fadb6ea58cf117df2164ef3/web%20scraping/Cleaned%20Data/Brazil_Sao%20Bernardo%20Do%20Campo_Cleaned.csv"
+
+dados <- readr::read_csv(link)
+```
+
+
+## a) Gráfico
+
+Analise a relação entre entre cobertura de nuvens (cloud_coverage) e temperatura máxima (maximum_temperature). Para isso, plote gráficos com a relação bivariada, use coeficiente de correlação ou um modelo linear (OLS). Descreva os resultados que encontrar.
+
+```{r}
+
+dados %>% 
+  ggplot()+
+  geom_point(aes(x = cloud_coverage, y = maximum_temprature))+
+  geom_smooth(aes(x=cloud_coverage, y = maximum_temprature))
+
+
+dados %>% 
+  cor.test(~ cloud_coverage + maximum_temprature, data=.) %>%
+  tidy()
+
+
+dados %>% lm(cloud_coverage ~ maximum_temprature, data=.) %>% 
+  tidy()
+
+
+
+```
+
+
+## b) Exploração
+
+Existe alguma outra variável na base com maior correção com a temperatura máxima? Novamente, registre os resultados que encontrar.
+
+```{r}
+dados %>% 
+  cor.test(~ minimum_temprature + maximum_temprature, data=.) %>%
+  tidy()
+
+dados %>% 
+  cor.test(~ amount_of_rain + maximum_temprature, data=.) %>%
+  tidy()
+
+dados %>% 
+  cor.test(~ pressure + maximum_temprature, data=.) %>%
+  tidy()
+
+```
+
+
+## c) Exportação
+
+Crie um código que faça um gráfico da relação bivariada entre todas as variáveis contínuas na base e os salve em disco.
+
+```{r}
+
+
+dados %>% select_if(is.numeric) %>% 
+  melt(id="maximum_temprature") %>% 
+  ggplot(aes(x=maximum_temprature, y=value))+
+  geom_point() +
+  geom_smooth(method = "lm", se = F)+
+  facet_wrap(vars(variable), scales = 'free')
+
+ggsave(file = paste0("grafico1_aula2.png"))
+```
+
+## d) Modelo
+
+Rode modelos lineares simples (por mínimos quadrados ordinários) para predizer a temperatura máxima diária em São Bernardo do Campo (SP). Use as variáveis que quiser, faça transformações nelas se necessário, e reporte alguns resultados do melhor modelo que encontrar.
+
+```{r, results='asis'}
+
+reg1 <- dados %>% lm(maximum_temprature ~ minimum_temprature, data=.)
+reg2 <- dados %>% lm(maximum_temprature ~ cloud_coverage, data=.)
+reg3 <- dados %>% lm(maximum_temprature ~ wind_speed, data=.)
+reg4 <- dados %>% lm(maximum_temprature ~ humidity, data=.)
+reg5 <- dados %>% lm(maximum_temprature ~ pressure, data=.)
+
+
+list(reg1, reg2, reg3, reg4, reg5) %>% stargazer(type = "html")
+```
+
+## e) Comparação
+
+Salve as predições do seu modelo treinado no exercício anterior e compare com os valores reais de temperatura máxima (vale usar gráficos).
+
+
+```{r}
+grid <- dados %>% 
+  spread_predictions(reg1, reg2, reg3, reg4, reg5)
+
+grid %>% select_if(is.numeric) %>% 
+  ggplot(aes(x = maximum_temprature, y = minimum_temprature)) +
+  geom_point() +
+  geom_smooth(aes(reg1), colour = "red")
+
+grid %>% select_if(is.numeric) %>% 
+  ggplot(aes(x = maximum_temprature, y = cloud_coverage)) +
+  geom_point() +
+  geom_smooth(aes(reg2), colour = "red")
+```
+
+
+# 2 - Sorteios
+
+## a) Umidade
+
+
+Crie uma função (ou um código) para sortear 1000 observações do banco de dados climáticos, calcular a média de umidade (humidity).
+
+```{r}
+sample_mean <- function(df) {
+  amostra <- sample(df$humidity, 1000)
+  media <- mean(amostra)
+  return(media)
+}
+
+dados %>% sample_mean()
+```
+
+## b) Histograma
+
+Com a função criada anteriormente, calcule 1000 médias de amostras de humidity e plote a distribuição como um histograma.
+
+
+```{r}
+
+# Banco de dados vazio
+y <- data.frame()
+
+
+# Loop da função sample_mean
+
+for(i in 1:1000){ 
+  
+  resultado <- dados %>% sample_mean
+  y <- rbind.data.frame(y, resultado)
+  
+}
+
+# Histograma
+
+y %>% 
+  rename(media = 1) %>% 
+  ggplot() +
+  geom_histogram(aes(x=media))
+  
+
+```
+
+## c) Modelos Lineares
+
+Modifique a função criada anteriormente para, depois de sortear 1000 observações do banco, rodar um modelo de regressão linear para predizer valores de humidity e extrair o r2 do modelo.
+
+```{r}
+
+#Nova função
+
+rquad <- function(df){
+  
+  df %>% 
+    sample_n(1000) %>% 
+    lm(humidity ~ wind_speed + maximum_temprature,
+       data = .) %>% 
+    summary() %>% 
+    pluck("r.squared")
+}
+
+rquad(dados)
+
+# Loop de 1000
+
+rsqd <- data.frame()
+
+for(i in 1:1000){ 
+  
+  resultado <- rquad(dados)
+  rsqd <- rbind.data.frame(rsqd, resultado)
+  
+}
+
+rsqd %>% rename(mean_rsqd = 1) %>% 
+  ggplot() +
+  geom_histogram(aes(x= mean_rsqd))
+  
+
+```
+
+
+# 3 - Frameworks
+
+Ainda usando a base carregada anteriormente, use um framework para estimar um modelo de regressão tendo humidity como target. Dicas: siga os tutoriais do mlr3, para R, ou do sci-kit learn, para Python. Não se preocupe em usar os frameworks perfeitamente, o importante é ganhar familiaridade com eles.
+
+
+```{r}
+
+dadosmlr <- dados %>% 
+  transform(dia = as.POSIXct(date)) %>% 
+  dplyr::select_if(is.numeric)
+
+task_humidity = as_task_regr(dadosmlr, target="humidity")
+print(task_humidity)
+
+
+learner = lrn("regr.rpart")
+learner2 = lrn("regr.lm")
+
+
+# Train a model of this learner for a subset of the task
+
+learner$train(task_humidity, row_ids= 1:120)
+learner2$train(task_humidity, row_ids= 1:120)
+
+# This is what the decision tree looks like
+
+learner$model
+learner2$model
+
+
+
+# Prediction
+
+prediction1 = learner$predict_newdata(dadosmlr) 
+prediction1
+
+
+prediction2 = learner2$predict_newdata(dadosmlr)
+prediction2
+
+
+prediction2 %>% ggplot(aes(x = truth, y = response)) + 
+  geom_point() +
+  geom_smooth(method = "lm", se = F)
+```
+
+
+
+
