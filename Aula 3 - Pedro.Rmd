@@ -1,0 +1,398 @@
+---
+title: "Aula 2 - Meireles"
+author: "Pedro Schmalz"
+date: "2022-08-24"
+output: html_document
+---
+
+```{r, echo=FALSE}
+knitr::opts_chunk$set(echo=F, error=FALSE, warning=FALSE, message=FALSE)
+```
+
+```{r}
+#Pacotes utilizados
+
+if (!require("pacman")) install.packages("pacman"); # O Pacote "pacman" permite carregar os pacotes com menos código
+
+# Carregando os pacotes
+
+pacman::p_load("tidyverse",  "dplyr", "tidylog", "DT", "datasets", "ggplot2", "readxl", "haven", "knitr", "reshape2", "broom", "modelr", "lubridate", "stargazer", "jtools", "purrr", "mlr3", "mlr3measures", "mlr3viz", "mlr3learners", "GGally", "kknn")
+
+#seed
+
+set.seed(1)
+```
+
+# 1 - Dados
+
+Para esse exercício, será necessário carregar alguns dados sobre violência policial letal nos Estados Unidos:
+
+```{r}
+link <- "https://raw.githubusercontent.com/FLS-6497/datasets/main/aula3/PKAP_raw_data.csv"
+dados <- readr::read_csv(link)
+```
+
+## a) Exploração de features
+
+Faça gráficos de barras com a frequência da variável race por cada uma das variáveis officer_ na base de dados. O resultado deve indicar quantas vítimas de mortes por violência letal policial de diferentes raças (whites e blacks) ocorreram em diferentes categorias (e.g., office_offduty). Dica: algumas variáveis precisam ser recategorizadas porque possuem muitas categorias com poucas ocorrências.
+
+```{r}
+
+dados_ex1 <- dados %>% 
+  dplyr::select(race, contains("officer_")) %>% 
+  mutate(race = ifelse(race == "Black", 1, 0)) %>% 
+  mutate(officer_present = ifelse(officer_present == "Unknown", 1, 0)) %>% 
+  mutate(officer_race = case_when(
+    officer_race == "White" ~ 1,
+    officer_race == "White,Unknown" ~ 1,
+    officer_race == "White, Unknown" ~ 1,
+    TRUE ~ 0
+  )) %>% 
+  mutate(across(c(officer_name, officer_years, officer_undercover, officer_offduty, officer_personal),
+                ~ ifelse(.x == "Yes", 1, 0))) %>% 
+  mutate(officer_gender = ifelse( str_detect(officer_gender, "Female") , 1, 0)) %>% 
+  dplyr::select(-officer_fire)
+
+dados_ex1 %>% 
+  pivot_longer(-race) %>% 
+  mutate(race = ifelse(race == 1, "Black", "White")) %>% 
+  group_by(name, race) %>% 
+  summarise(n = sum(value, na.rm = T)) %>% 
+  
+  ggplot(aes(x = race, y = n))+
+  geom_col()+
+  facet_wrap(~ name,scales = "free")
+```
+
+
+## b) Nova base
+
+Crie uma nova base de dados que inclua apenas as variáveis mencionadas na Tabela 1 do paper de Streeter. Dica: será necessário criar novas variáveis e descartar outras existentes na base. Para quem usa Python, também é importante recodificar variáveis para o formato de one hot encoding (em R, a maioria das funções de regressão já faz essa conversão por baixo dos panos).
+
+```{r}
+dados <- dados %>% 
+  dplyr::select(location, witness, reason_contact, time, armed, non_compliance,
+               officer_race, swat, crime, warrant_crime, criminal_rec, violent_rec,
+               age, gender, race, mental)
+
+
+```
+
+# 2 - Classificador Logístico
+
+Usando um framework (mlr3 ou sci-kit), treine um modelo logístico para predizer mortes de blacks (crie uma dummy indicando 1 para essa ocorrência) usando as variáveis anteriores.
+
+```{r}
+
+library(mlr3learners)
+library(mlr3)
+
+dados_ex1 <- dados_ex1 %>% drop_na(officer_gender, officer_undercover)  # Removi os NAs por erro
+
+task = as_task_classif(race ~ ., data = dados_ex1)
+learner <- lrn("classif.log_reg")
+learner$train(task)
+
+# Avalia predicoes
+pred <- learner$predict(task)
+pred$confusion
+measure <- msr("classif.acc")
+pred$score(measure)
+```
+
+# 3 - Treino e teste
+
+## a - Criar função
+
+Crie uma função para sortear da base uma amostra de treino e, outra, de teste. Para isso, a função pode retornar uma lista com as duas amostras. Crie também um argumento na função que permita selecionar o percentual de observações na amostra de treino (o default precisará ser 0.7).
+
+```{r}
+
+split_sample <- function(df, ratio = 0.7){
+  task = as_task_classif(race ~ ., data = df)
+  splits = partition(task, ratio = ratio)
+}
+
+
+dados_separados <- split_sample(dados_ex1)
+
+
+```
+
+
+## b - Modelo com treino e teste
+
+Com a função anterior, retreine seu modelo anterior na amostra de treino e, depois, aplique as predições na amostra de teste.
+
+```{r}
+
+pred = learner$train(task, dados_separados$train)$
+  predict(task, dados_separados$test)
+
+pred$
+  confusion
+
+```
+```{r}
+autoplot(pred)
+```
+
+```{r}
+# Learner probabilístico
+learner_prob = lrn("classif.rpart", predict_type = "prob")
+
+pred2 = learner_prob$
+  train(task, dados_separados$
+          train)$
+  predict(task, dados_separados$test)
+
+# ROC - True positive rate (TPR) vs. False Positive Rate (FPR)
+autoplot(pred2, type= "roc")
+```
+
+```{r}
+# Precision vs. Recall
+autoplot(pred2, type = "prc")
+```
+
+
+
+## c - Tamanho das amostras de treino
+
+Com a função anterior, retreine seu modelo usando diferentes tamanhos de amostra de treino, de 0.3 a 0.9 com intervalos de 0.05. Crie um gráfico para reportar alguma métrica de validação (pode ser acurácia ou precisão, ou ainda F1) e, no eixo X, inclua a informação sobre o percentual usado
+
+
+```{r}
+
+# Medidas de validação
+
+accmsr <- msr("classif.acc")
+precmsr <- msr("classif.precision")
+recallmsr <- msr("classif.recall")
+
+
+# Ratios
+
+ratios <- c(seq(0.3,0.9, by=0.05))
+
+# Bancos de dados de outputs
+
+out <- tibble(
+  acc = numeric(),
+  prec = numeric(),
+  recall = numeric(),
+  f1 = numeric()
+)
+
+
+for (i in 1:length(ratios)){
+  
+  # Dividir os bancos
+  splits <- split_sample(dados_ex1, ratio = ratios[[i]])
+  
+  # Fazer o treino e já prever
+  pred <- learner_prob$
+    train(task, splits$train)$
+    predict(task, splits$test)
+  
+  # Medidas de Precisão
+  acc <- pred$score(accmsr)
+  prec <- pred$score(precmsr)
+  recall <- pred$score(recallmsr)
+  f1 <- (2*prec*recall)/(prec+recall)
+  
+  # Salvar o ratio de cada iteração
+  ratio <- ratios[[i]]
+  
+  # Output dos resultados
+  out <- rbind(out, c(acc, prec, recall, f1, ratio))
+  
+}
+
+# Renomeando as colunas
+
+out <- out %>% rename(acc = 1, prec = 2, recall = 3, f1 = 4, ratio = 5)
+```
+
+
+```{r}
+# Resumo das iterações
+out %>% pivot_longer(1:4, names_to = "measure", values_to = "result") %>% 
+  ggplot(aes(x = measure, y = result))+
+  geom_boxplot()+
+  theme_minimal()+
+  scale_y_continuous(breaks=seq(0.4, 1, 0.1))+
+  ylim(0.5,1.1)+
+  labs(x = "Medida", 
+       y = "Valor")
+
+```
+```{r}
+# Por Ratio
+
+out %>% pivot_longer(1:4, names_to = "measure", values_to = "result") %>%
+  ggplot(aes(x = ratio, y = result))+
+  geom_line(aes(colour = measure))+
+  theme_minimal()+
+  labs(x = "Proporção para Treino", 
+       y = "Valor",
+       color = "Medida",
+       title = "Medidas de Validação para cada Ratio")+
+  scale_y_continuous(breaks=seq(0.6, 1, 0.1))+
+  ylim(0.6,1)
+  
+```
+
+
+
+# 4 - Validação
+
+## a - Nova Função
+
+Modifique a função criada anteriormente para que ela já separe a amostra em treino e teste, rode um modelo logístico e retorne alguma métrica de validação.
+
+```{r}
+
+auto_model <- function(df, ratio = 0.7, learner = learner_prob){
+  
+  # Dividir o banco
+  splits <- split_sample(dados_ex1, ratio = ratio)
+  
+  outmodel <- tibble(
+  acc = numeric(),
+  prec = numeric(),
+  recall = numeric(),
+  f1 = numeric()
+)
+  
+  pred <- learner$
+    train(task, splits$train)$
+    predict(task, splits$test)
+  
+  # Medidas de Precisão
+  acc <- pred$score(accmsr)
+  prec <- pred$score(precmsr)
+  recall <- pred$score(recallmsr)
+  f1 <- (2*prec*recall)/(prec+recall)
+  
+  # Output
+  
+  outmodel <- rbind(outmodel, c(acc, prec, recall, f1)) %>% 
+    rename(acc = 1, prec = 2, recall = 3, f1 = 4)
+  
+}
+
+
+auto_model(dados_ex1)
+
+
+
+```
+
+## b - Cross-Validation
+
+Use a função criada anteriormente para rodar 500 modelos logísticos em diferentes amostras de treino e de teste. Reporte os resultados desse exercício com um histograma dos valores de validação de alguma métrica.
+
+```{r}
+
+val_measures <- tibble()
+
+for (i in 1:500){
+  
+  resultado <- auto_model(dados_ex1, ratio = ratio)
+  val_measures <- rbind.data.frame(val_measures, resultado)
+  
+  
+}
+
+```
+
+```{r}
+# Histograma
+
+val_measures %>%
+  pivot_longer(colnames(val_measures)) %>% 
+  ggplot(aes(x=value))+
+  geom_histogram(aes(y = after_stat(density)))+
+  geom_density(aes(y = after_stat(density)),
+               col = "#1b98e0", 
+               size = 1.5)+
+  theme_minimal()+
+  facet_wrap(~ name, scales = 'free')
+  
+  
+```
+
+
+
+
+# 5 - Comparação de modelos
+
+Adapte a função criada anteriormente para rodar um outro modelo de classificação binário, como naive bayes ou K-Nearest Neighbors (explore a documentação dos frameworks para descobrir outras opções e saber mais). Com esse novo modelo, rode 500 vezes e compare os resultados com o do modelo logístico criado anteriormente.
+
+```{r}
+# Naive Bayes
+
+naive_bayes = lrn("classif.naive_bayes")
+
+naive_measures <- tibble()
+
+for (i in 1:500){
+  
+  resultado <- auto_model(dados_ex1, ratio = ratio, learner = naive_bayes)
+  naive_measures <- rbind.data.frame(naive_measures, resultado)
+  
+  
+}
+```
+
+```{r}
+# Naive Bayes histogram
+
+naive_measures %>%
+  pivot_longer(colnames(naive_measures)) %>% 
+  ggplot(aes(x=value))+
+  geom_histogram(aes(y = after_stat(density)))+
+  geom_density(aes(y = after_stat(density)),
+               col = "#1b98e0", 
+               size = 1.5)+
+  theme_minimal()+
+  facet_wrap(~ name, scales = 'free')
+```
+
+
+
+```{r}
+# K-Nearest Neighbors
+
+
+knear = lrn("classif.kknn")
+
+knear_measures <- tibble()
+
+for (i in 1:500){
+  
+  resultado <- auto_model(dados_ex1, ratio = ratio, learner = knear)
+  knear_measures <- rbind.data.frame(knear_measures, resultado)
+  
+  
+}
+
+```
+
+```{r}
+
+# K-Nearest Neighbors Measures
+
+knear_measures %>%
+  pivot_longer(colnames(knear_measures)) %>% 
+  ggplot(aes(x=value))+
+  geom_histogram(aes(y = after_stat(density)))+
+  geom_density(aes(y = after_stat(density)),
+               col = "#1b98e0", 
+               size = 1.5)+
+  theme_minimal()+
+  facet_wrap(~ name, scales = 'free')
+```
+
+
