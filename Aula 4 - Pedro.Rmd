@@ -1,0 +1,414 @@
+---
+title: "Aula 4 - Meireles"
+author: "Pedro Schmalz"
+date: "2022-09-14"
+output: html_document
+---
+
+```{r, echo=FALSE}
+knitr::opts_chunk$set(echo=F, error=FALSE, warning=FALSE, message=FALSE)
+```
+
+```{r}
+#Pacotes utilizados
+
+if (!require("pacman")) install.packages("pacman"); # O Pacote "pacman" permite carregar os pacotes com menos código
+
+# Carregando os pacotes
+
+pacman::p_load("tidyverse",  "dplyr", "tidylog", "DT", "datasets", "ggplot2", "readxl", "haven", "knitr", "reshape2", "broom", "modelr", "lubridate", "stargazer", "jtools", "purrr", "mlr3", "mlr3measures", "mlr3viz", "mlr3learners", "GGally", "kknn", "glmnet")
+
+#seed
+
+set.seed(42)
+```
+
+
+# 1) Workflow
+
+Para esse exercício, será necessário carregar alguns dados que já vimos sobre o clima em São Bernardo do Campo (SP):
+
+
+```{r}
+
+link <- "https://raw.githubusercontent.com/jacobwright32/Web_Scraper_AI_Core_Project/bb4865ae568e23ab8fadb6ea58cf117df2164ef3/web%20scraping/Cleaned%20Data/Brazil_Sao%20Bernardo%20Do%20Campo_Cleaned.csv"
+
+dados <- readr::read_csv(link)
+```
+
+
+Também usaremos, de ponta a ponta, os frameworks que estamos estudando. Para rodar um modelo de regressão OLS com partição da amostra entre teste e treino, podemos usar:
+
+
+```{r}
+
+# Seleciona a tarefa e o modelo
+tsk <- as_task_regr(humidity ~ maximum_temprature + wind_speed, data = dados)
+learner <- lrn("regr.lm")
+
+# Define estrategia de separacao da amostra
+resampling <- rsmp("holdout", ratio = 0.7)
+
+# Treina o modelo
+resultados <- resample(tsk, learner, resampling)
+
+# Avalia predicoes
+measure <- msr(c("regr.mse")) # MSE
+resultados$score(measure, ids = FALSE, predict_sets = "test")
+```
+
+## a - Treino 
+
+Treine modelos lineares (OLS) usando a combinação de variáveis que você achar melhor.
+
+```{r}
+# Modelo 1 - Chuva e Nuvens
+tsk1 <- as_task_regr(humidity ~ maximum_temprature + cloud_coverage + amount_of_rain, data = dados)
+
+# Treinando o modelo 1
+resultados1 <- resample(tsk1, learner, resampling)
+```
+
+## b - Métricas
+
+Usando o modelo treinado anterioremente, calcule diferentes métricas de validação.
+
+```{r}
+# Avalia predicoes
+
+
+# MSE
+measure <- msr(c("regr.mse")) # MSE
+resultados1$score(measure, ids = FALSE, predict_sets = "test")
+
+
+#RMSE
+measure<- msr(c("regr.rmse"))
+resultados1$score(measure, ids= FALSE, predict_sets = "test")
+
+```
+
+## c - Função
+
+Crie uma função que rode esse workflow inteiro e retorne apenas uma métrica de validação. Rode essa função 100 vezes e reporte os resultados (como quiser, com gráfico ou outros).
+
+```{r}
+
+linreg_mse <- function(df, formula , ratio = 0.7){
+  
+tsk <- as_task_regr(formula, data = df)
+learner <- lrn("regr.lm")
+
+# Define estrategia de separacao da amostra
+resampling <- rsmp("holdout", ratio = ratio)
+
+# Treina o modelo
+resultados <- resample(tsk, learner, resampling)
+
+# Avalia predicoes
+measure <- msr(c("regr.mse")) # MSE e RMSE
+
+mse <- resultados$score(measure, ids = FALSE, predict_sets = "test")
+
+
+}
+
+mse <- dados %>% linreg_mse(formula = humidity ~ maximum_temprature) %>% 
+  pluck("regr.mse")
+
+```
+
+```{r}
+
+mse_model1 <- tibble()
+
+for (i in 1:100){
+  
+  resultado <- dados %>% linreg_mse(formula = humidity ~ maximum_temprature + cloud_coverage + amount_of_rain) %>% 
+  pluck("regr.mse")
+  
+  mse_model1 <- rbind.data.frame(mse_model1, resultado)
+  
+  mse_model1 <- mse_model1 %>% rename(mse = 1)
+  
+}
+```
+
+```{r}
+
+mse_model1 %>% 
+  ggplot(aes(x = mse))+
+  geom_histogram(aes(y = ..density..))+
+  geom_density(color = "blue")+
+  theme_minimal()
+
+```
+
+## Ajuste
+
+Usando a função anterior, teste diferentes combinações de variáveis no modelo para achar um que tenha uma boa performance.
+
+```{r}
+
+mse_model2 <- tibble()
+
+for (i in 1:100){
+  
+  resultado <- dados %>% linreg_mse(formula = humidity ~ pressure + amount_of_rain + wind_speed) %>% 
+  pluck("regr.mse")
+  
+  mse_model2 <- rbind.data.frame(mse_model2, resultado)
+  
+  mse_model2 <- mse_model2 %>% rename(mse = 1)
+  
+}
+
+
+```
+
+```{r}
+
+mse_model2 %>% 
+  ggplot(aes(x = mse))+
+  geom_histogram(aes(y = ..density..))+
+  geom_density(color = "blue")+
+  theme_minimal()
+
+
+```
+
+# 2 - Regularização
+
+Para esse exercício, serão necessários os seguintes algoritmos:
+
+```{r}
+
+lasso <- lrn("regr.glmnet", alpha = 1) # Lasso
+
+# Ou
+
+ridge <- lrn("regr.glmnet", alpha = 0) # RIDGE
+
+
+```
+
+## a -REgularização
+
+Usando a mesma base de dados, adapte seu workflow anterior para, em vez de usar regressão linear, estimar modelos LASSO e Ridge.
+
+```{r}
+
+fun2a <- function(df, formula, algoritmo = "regr.glmnet", alpha,  ratio = 0.7){
+  
+tsk <- as_task_regr(formula, data = df)
+learner <- lrn(algoritmo, alpha = alpha)
+
+# Define estrategia de separacao da amostra
+
+resampling <- rsmp("holdout", ratio = ratio)
+
+# Treina o modelo
+resultados <- resample(tsk, learner, resampling)
+
+# Avalia predicoes
+measure <- msr(c("regr.mse")) # MSE
+measures <- msrs(c("regr.mse", "regr.rmse"))
+
+msrs <- resultados$score(measures, ids = FALSE, predict_sets = "test")
+
+
+
+
+}
+
+# LASSO
+
+lasso_msrs <- dados %>% fun2a(formula = humidity ~ maximum_temprature + pressure, alpha = 1) %>%
+  keep(names(.) %in% c("regr.mse", "regr.rmse"))
+  
+
+
+# RIDGE
+
+ridge_msrs <- dados %>% fun2a(formula = humidity ~ maximum_temprature + pressure, alpha = 0) %>%
+  keep(names(.) %in% c("regr.mse","regr.rmse"))
+
+
+```
+
+## b - Funções
+
+Crie uma função para estimar LASSO e Ridge e compare os resultados de 100 execuções.
+
+
+```{r}
+# Loop Lasso
+
+lasso_msrs <- tibble()
+
+for (i in 1:100){
+
+resultado <- dados %>% fun2a(formula = humidity ~ maximum_temprature + pressure, alpha = 0) %>%
+  keep(names(.) %in% c("regr.mse","regr.rmse"))
+
+  lasso_msrs<- rbind.data.frame(lasso_msrs, resultado)
+}
+```
+
+
+```{r}
+# Loop Ridge
+
+ridge_msrs <- tibble()
+
+for (i in 1:100){
+
+resultado <- dados %>% fun2a(formula = humidity ~ maximum_temprature + pressure, alpha = 0) %>%
+  keep(names(.) %in% c("regr.mse","regr.rmse"))
+
+  ridge_msrs<- rbind.data.frame(ridge_msrs, resultado)
+}
+
+
+```
+
+
+# 3 - Regulação e Transformador de preditores
+
+Para este exercício, será necessário carregar os seguintes dados com resultados do segundo turno de 2018 por município no Brasil:
+
+```{r}
+
+link <- "https://raw.githubusercontent.com/FLS-6497/datasets/main/aula4/eleicoes_mun_2018.csv"
+elei18 <- readr::read_csv2(link)
+
+```
+
+## a - transformações básicas
+
+Crie uma nova variável que indique o percentual de votos válidos de Bolsonaro (dica: basta dividir votos_bolsonaro_2t_2018 por votos_validos_2t_2018)
+
+```{r}
+
+elei18 <- elei18 %>% 
+  mutate(perc_val = votos_bolsonaro_2t_2018/votos_validos_2t_2018)
+
+```
+
+## b - Exploração
+
+Crie alguns gráficos pra explorar a relação entre a votação de Bolsonaro e algumas das variáveis do banco (faça como quiser, e quantos gráficos quiser).
+
+
+```{r}
+
+elei18 %>% 
+  mutate(pib_pc = pib_total/aptos_2018) %>% 
+  ggplot(aes(x= pib_pc, y = perc_val))+
+  geom_point()+
+  geom_smooth()+
+  theme_minimal()+
+  labs(x = "PIB per Capita",
+       y = "% de Votos Válidos em Bolsonaro")
+
+```
+
+
+
+
+## c - Modelos
+
+Rode modelos lineares, com e sem regularização, para tentar predizer a votação de Bolsonaro nos municípios usando variáveis como regiao, semiarido, capital, pib_total.
+
+```{r}
+
+#
+
+elei18 <- elei18 %>% mutate(reg_code = case_when(regiao == "Norte"~1,
+                                                 regiao == "Centro-Oeste"~2,
+                                                 regiao == "Sul"~3,
+                                                 regiao == "Sudeste"~4,
+                                                 regiao == "Nordeste"~5))
+
+# Sem Regularização
+
+mse_lin <- elei18 %>% 
+  linreg_mse(formula = perc_val ~ reg_code + semiarido + capital + pib_total) %>% 
+  pluck("regr.mse")
+
+
+# Lasso
+
+lasso_mse <- elei18 %>% fun2a(formula = perc_val ~ reg_code + semiarido + capital + pib_total, alpha = 1) %>%
+  keep(names(.) %in% c("regr.mse", "regr.rmse"))
+
+
+# Ridge
+
+ridge_mse <- elei18 %>% 
+  fun2a(formula = perc_val ~ reg_code + semiarido + capital + pib_total, alpha = 0) %>%
+  keep(names(.) %in% c("regr.mse", "regr.rmse"))
+  
+
+
+```
+
+```{r}
+
+out <- tibble(
+  mse_lin = numeric(),
+  mse_lasso = numeric(),
+  mse_ridge = numeric(),
+)
+
+for (i in 1:100){
+
+mse_lin <- elei18 %>% linreg_mse(formula = perc_val ~ reg_code + semiarido + capital + pib_total) %>% 
+  pluck("regr.mse")
+
+# Lasso
+
+mse_lasso <- elei18 %>% fun2a(formula = perc_val ~ reg_code + semiarido + capital + pib_total, alpha = 1) %>%
+  pluck("regr.mse")
+
+
+# Ridge
+
+mse_ridge <- elei18 %>% fun2a(formula = perc_val ~ reg_code + semiarido + capital + pib_total, alpha = 0) %>%
+  pluck("regr.rmse")
+
+
+out <- rbind(out, c(mse_lin, mse_lasso, mse_ridge))
+
+out <- out %>% rename(mse_lin = 1, mse_lasso = 2, mse_ridge = 3)
+
+}
+```
+
+Performance de cada modelo.
+
+```{r}
+
+out %>% pivot_longer(1:3, names_to = "models", values_to = "result") %>% 
+  ggplot(aes(x = result))+
+  geom_density(aes(y = ..scaled.., fill = models), alpha = 0.6, kernel="cosine") +
+  theme_minimal()+
+  xlim(0, 0.25)+
+  labs(x = "Mean-Squared Error",
+       y = "Densidade (scaled)",
+       title = "MSE de cada modelo",
+       fill = "Modelos")
+
+
+```
+
+
+
+
+
+
+
+
+
+
+
