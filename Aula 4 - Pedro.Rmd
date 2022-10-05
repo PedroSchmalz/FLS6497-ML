@@ -106,7 +106,7 @@ resampling <- rsmp("holdout", ratio = ratio)
 resultados <- resample(tsk, learner, resampling)
 
 # Avalia predicoes
-measure <- msr(c("regr.mse")) # MSE e RMSE
+measure <- msrs(c("regr.mse", "regr.rmse")) # MSE e RMSE
 
 mse <- resultados$score(measure, ids = FALSE, predict_sets = "test")
 
@@ -124,7 +124,7 @@ mse_model1 <- tibble()
 
 for (i in 1:100){
   
-  resultado <- dados %>% linreg_mse(formula = humidity ~ maximum_temprature + cloud_coverage + amount_of_rain) %>% 
+  resultado <- dados %>% linreg_mse(formula = humidity ~ pressure + amount_of_rain + wind_speed) %>% 
   pluck("regr.mse")
   
   mse_model1 <- rbind.data.frame(mse_model1, resultado)
@@ -154,7 +154,7 @@ mse_model2 <- tibble()
 
 for (i in 1:100){
   
-  resultado <- dados %>% linreg_mse(formula = humidity ~ pressure + amount_of_rain + wind_speed) %>% 
+  resultado <- dados %>% linreg_mse(formula = humidity ~ maximum_temprature + cloud_coverage + amount_of_rain) %>% 
   pluck("regr.mse")
   
   mse_model2 <- rbind.data.frame(mse_model2, resultado)
@@ -170,7 +170,7 @@ for (i in 1:100){
 
 mse_model2 %>% 
   ggplot(aes(x = mse))+
-  geom_histogram(aes(y = ..density..))+
+  geom_histogram(aes(y = ..density..), fill = "blue", alpha = 0.5)+
   geom_density(color = "blue")+
   theme_minimal()
 

@@ -358,6 +358,7 @@ naive_measures %>%
                size = 1.5)+
   theme_minimal()+
   facet_wrap(~ name, scales = 'free')
+
 ```
 
 

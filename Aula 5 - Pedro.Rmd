@@ -1,0 +1,698 @@
+---
+title: "Aula 4 - Meireles"
+author: "Pedro Schmalz"
+date: "2022-09-14"
+output: html_document
+---
+
+```{r, echo=FALSE}
+knitr::opts_chunk$set(echo=F, error=FALSE, warning=FALSE, message=FALSE)
+```
+
+```{r}
+#Pacotes utilizados
+
+if (!require("pacman")) install.packages("pacman"); # O Pacote "pacman" permite carregar os pacotes com menos código
+
+# Carregando os pacotes
+
+pacman::p_load("tidyverse",  "dplyr", "datasets", "ggplot2", "readxl", "haven", "knitr", "reshape2", "broom", "modelr", "stargazer", "jtools", "purrr", "mlr3", "mlr3measures", "mlr3viz", "mlr3learners", "GGally", "kknn", "glmnet", "quanteda", "janitor", "ranger")
+
+#seed
+
+set.seed(42)
+```
+
+
+# 1) Workflow
+
+Para esse exercício, será necessário carregar discursos presidenciais feitos por Dilma e Temer em parte de seus mandatos:
+
+
+```{r}
+
+link <- "https://github.com/FLS-6497/datasets/raw/main/aula5/discursos_presidenciais.csv"
+discursos <- readr::read_csv2(link)
+```
+
+
+Também precisaremos fazer pré-processamento dos textos:
+
+```{r}
+
+# 1) Criar um corpus
+corpus_disc <- corpus(discursos, text_field = "discurso")
+
+
+# 2) Tokenizacao
+
+tks_disc <- corpus_disc %>%
+  tokens(remove_punct = TRUE, remove_numbers = TRUE) %>%
+    tokens_tolower() %>% 
+  tokens_remove(pattern = stopwords("pt")) %>% 
+  tokens_remove(min_nchar = 5) 
+
+
+# 3) Matriz bag-of-words
+tks_dfm <- dfm(tks_disc) %>%
+  dfm_trim(min_docfreq = 0.05, docfreq_type = "prop")
+  
+
+# 4) Transforma em tibble e inclui o target
+dados <- as.matrix(tks_dfm) %>%
+  as_tibble() %>%
+  janitor::clean_names()
+
+dados$y <- discursos$presidente
+
+
+```
+
+
+## a) Pré-processamentos
+
+Usando ferramentas de processamento de texto, implemente uma pequena pipeline para limpar dados e, quando estiver satisfeito com ela, crie uma função que aplique ela em uma nova lista textos.
+
+
+```{r}
+
+funcao_bow <- function(df, var){
+  
+# 1) Criar um corpus
+corpus_disc <- corpus(df, text_field = var)
+
+
+# 2) Tokenizacao
+
+tks_disc <- corpus_disc %>%
+  tokens(remove_punct = TRUE, remove_numbers = TRUE) %>%
+  tokens_tolower() %>% 
+  tokens_remove(pattern = stopwords("pt")) %>% 
+  tokens_remove(min_nchar = 5) 
+
+
+# 3) Matriz bag-of-words
+bow <- dfm(tks_disc) %>%
+  dfm_trim(min_docfreq = 0.05, docfreq_type = "prop")
+  
+
+# 4) Transforma em tibble e inclui o target
+dataframe <- bow %>% 
+  as.matrix() %>%
+  as_tibble() %>%
+  janitor::clean_names() %>% 
+  mutate_all(as.numeric)
+
+dataframe$y <- df$presidente
+
+return(list(df=dataframe, bow=bow))
+
+}
+
+
+```
+
+## Dividindo em treino e teste
+
+```{r}
+
+# Cria ids
+
+discursos <- discursos %>% 
+  mutate(id = row_number())
+
+#Sorteia split-sample
+
+treino <- discursos %>% 
+  sample_n(0.9 * length(id))
+
+teste <- discursos %>% 
+  filter(!id %in% treino$id)
+
+
+# BOW usando a base de treino
+
+treino <- funcao_bow(treino, "discurso")
+
+
+# Adequa a base de teste
+
+teste_df <- teste %>% 
+  corpus(text_field="discurso") %>% 
+  tokens() %>% 
+  dfm() %>% 
+  dfm_match(featnames(treino$bow)) %>% 
+  as.matrix() %>% 
+  as_tibble() %>% 
+  janitor::clean_names()
+
+
+teste_df$y <- teste$presidente
+
+teste_df$y <- as.factor(teste_df$y)
+  
+  
+```
+
+
+## b - Modelo 
+
+Usando os frameworks de aprendizado de máquina, use a bag of words criada anteriormente para treinar algum modelo de classificação para predizer o nome do ou da presidente que proferiu cada discurso na amostra de teste.
+
+```{r}
+# Naive bayes
+
+tsk <- as_task_classif(y~., data = treino$df)
+learner <- lrn("classif.naive_bayes")
+learner$train(tsk)
+
+prediction = learner$predict_newdata(teste_df)
+prediction$score(msr("classif.fbeta"))
+
+```
+
+```{r}
+
+# Tree Learner
+
+learner <- lrn("classif.rpart")
+learner$train(tsk)
+
+prediction = learner$predict_newdata(teste_df)
+prediction$score(msr("classif.fbeta"))
+```
+
+```{r}
+
+# K-nearest Neighbors
+learner <- lrn("classif.kknn")
+learner$train(tsk)
+
+prediction = learner$predict_newdata(teste_df)
+prediction$score(msr("classif.fbeta"))
+```
+
+```{r}
+
+# Random Classification Forest
+
+learner <- lrn("classif.ranger")
+learner$train(tsk)
+
+prediction = learner$predict_newdata(teste_df)
+prediction$score(msr("classif.fbeta"))
+```
+
+
+
+# c - Validação
+
+Roda o item pedido em b) 100 vezes e salve os resultados de alguma métrica de validação.
+
+```{r}
+
+out <- tibble(
+  naive = numeric(),
+  tree = numeric(),
+  knn = numeric(),
+  forest = numeric()
+)
+
+
+for (i in 1:100){
+  
+# Cria ids
+
+discursos <- discursos %>% 
+  mutate(id = row_number())
+  
+#Sorteia split-sample
+
+treino <- discursos %>% 
+  sample_n(0.9 * length(id))
+
+teste <- discursos %>% 
+  filter(!id %in% treino$id)
+
+
+# BOW usando a base de treino
+
+treino <- funcao_bow(treino, "discurso")
+
+
+# Adequa a base de teste
+
+teste_df <- teste %>% 
+  corpus(text_field="discurso") %>% 
+  tokens() %>% 
+  dfm() %>% 
+  dfm_match(featnames(treino$bow)) %>% 
+  as.matrix() %>% 
+  as_tibble() %>% 
+  janitor::clean_names()
+
+teste_df$y <- teste$presidente
+teste_df$y <- as.factor(teste_df$y)
+
+
+# Task
+
+
+tsk <- as_task_classif(y~., data = treino$df)
+
+  
+# Naive bayes
+
+learner <- lrn("classif.naive_bayes")
+learner$train(tsk)
+prediction = learner$predict_newdata(teste_df)
+
+naive <- prediction$score(msr("classif.fbeta"))
+
+
+# Tree Learner
+
+learner <- lrn("classif.rpart")
+learner$train(tsk)
+
+prediction = learner$predict_newdata(teste_df)
+tree <- prediction$score(msr("classif.fbeta"))
+
+# K-nearest Neighbors
+learner <- lrn("classif.kknn")
+learner$train(tsk)
+
+prediction = learner$predict_newdata(teste_df)
+knn <- prediction$score(msr("classif.fbeta"))
+
+# Random Classification Forest
+
+learner <- lrn("classif.ranger")
+learner$train(tsk)
+
+prediction = learner$predict_newdata(teste_df)
+forest <- prediction$score(msr("classif.fbeta"))
+
+
+
+# Output
+
+out <- rbind(out, c(naive, tree, knn, forest))
+
+}
+
+# Renomeando as colunas
+
+discursos_fbeta <- out %>% rename(naive = 1, tree = 2, knn = 3, forest = 4)
+
+```
+
+```{r}
+discursos_fbeta
+```
+
+```{r}
+
+discursos_fbeta %>%
+  pivot_longer(colnames(discursos_fbeta)) %>% 
+  ggplot(aes(x=value))+
+  geom_histogram(aes(y = after_stat(density)))+
+  geom_density(aes(y = after_stat(density)),
+               col = "#1b98e0", 
+               size = 1.5)+
+  theme_minimal()+
+  facet_wrap(~ name, scales = 'free')+
+  labs(title = "F-betas para cada modelo em 100 iterações")
+
+```
+
+
+# Validação II
+
+Repita o exercício c), dessa vez usando a variável planalto, que indica se um discurso foi proferido no Palácio do Planalto, como target.
+
+```{r}
+
+funcao_bow_pla <- function(df, var){
+  
+# 1) Criar um corpus
+corpus_disc <- corpus(df, text_field = var)
+
+
+# 2) Tokenizacao
+
+tks_disc <- corpus_disc %>%
+  tokens(remove_punct = TRUE, remove_numbers = TRUE) %>%
+  tokens_tolower() %>% 
+  tokens_remove(pattern = stopwords("pt")) %>% 
+  tokens_remove(min_nchar = 5) 
+
+
+# 3) Matriz bag-of-words
+bow <- dfm(tks_disc) %>%
+  dfm_trim(min_docfreq = 0.05, docfreq_type = "prop")
+  
+
+# 4) Transforma em tibble e inclui o target
+dataframe <- bow %>% 
+  as.matrix() %>%
+  as_tibble() %>%
+  janitor::clean_names() %>% 
+  mutate_all(as.numeric)
+
+dataframe$y <- df$planalto
+return(list(df=dataframe, bow=bow))
+
+}
+```
+
+
+```{r}
+
+
+out <- tibble(
+  naive = numeric(),
+  tree = numeric(),
+  knn = numeric(),
+  forest = numeric()
+)
+
+
+for (i in 1:100){
+  
+# Cria ids
+
+discursos <- discursos %>% 
+  mutate(id = row_number())
+  
+#Sorteia split-sample
+
+treino <- discursos %>% 
+  sample_n(0.9 * length(id))
+
+teste <- discursos %>% 
+  filter(!id %in% treino$id)
+
+
+# BOW usando a base de treino
+
+treino <- funcao_bow_pla(treino, "discurso")
+
+
+# Adequa a base de teste
+
+teste_df <- teste %>% 
+  corpus(text_field="discurso") %>% 
+  tokens() %>% 
+  dfm() %>% 
+  dfm_match(featnames(treino$bow)) %>% 
+  as.matrix() %>% 
+  as_tibble() %>% 
+  janitor::clean_names()
+
+teste_df$y <- teste$planalto
+teste_df$y <- as.factor(teste_df$y)
+
+
+# Task
+
+
+tsk <- as_task_classif(y~., data = treino$df)
+
+  
+# Naive bayes
+
+learner <- lrn("classif.naive_bayes")
+learner$train(tsk)
+prediction = learner$predict_newdata(teste_df)
+
+naive <- prediction$score(msr("classif.fbeta"))
+
+
+# Tree Learner
+
+learner <- lrn("classif.rpart")
+learner$train(tsk)
+
+prediction = learner$predict_newdata(teste_df)
+tree <- prediction$score(msr("classif.fbeta"))
+
+# K-nearest Neighbors
+learner <- lrn("classif.kknn")
+learner$train(tsk)
+
+prediction = learner$predict_newdata(teste_df)
+knn <- prediction$score(msr("classif.fbeta"))
+
+# Random Classification Forest
+
+learner <- lrn("classif.ranger")
+learner$train(tsk)
+
+prediction = learner$predict_newdata(teste_df)
+forest <- prediction$score(msr("classif.fbeta"))
+
+
+
+# Output
+
+out <- rbind(out, c(naive, tree, knn, forest))
+
+}
+
+# Renomeando as colunas
+
+planalto_fbeta <- out %>% rename(naive = 1, tree=2, knn=3, forest=4)
+
+```
+
+
+```{r}
+planalto_fbeta
+```
+
+
+```{r}
+
+planalto_fbeta %>%
+  pivot_longer(colnames(discursos_fbeta)) %>% 
+  ggplot(aes(x=value))+
+  geom_histogram(aes(y = after_stat(density)))+
+  geom_density(aes(y = after_stat(density)),
+               col = "#1b98e0", 
+               size = 1.5)+
+  theme_minimal()+
+  facet_wrap(~ name, scales = 'free')+
+  labs(title = "F-betas para cada modelo em 100 iterações")
+
+```
+
+# 2) Validação
+
+Como vimos, pré-processamento deve ser aplicado antes de fazermos split sample de validação (i.e., criar amostras de teste e de treino). Agora, implemente um workflow que leva isso em conta. Para tanto, você deverá criar uma função que separe textos em treino e teste, que aplique pré-processamento apenas na amostra de treino e que, depois, replique ele na amostra de teste para, então, rodar um algoritmo e calcular alguma métrica de validação.
+
+```{r}
+# Função bow com argumentos
+
+bow_treino <- function(df, var, min_nchar = 5, min_freq = 0.05, freq_type = "prop", tfidf = FALSE){
+  
+# 1) Criar um corpus
+corpus_disc <- corpus(df, text_field = var)
+
+
+# 2) Tokenizacao
+
+tks_disc <- corpus_disc %>%
+  tokens(remove_punct = TRUE, remove_numbers = TRUE) %>%
+  tokens_tolower() %>% 
+  tokens_remove(pattern = stopwords("pt")) %>% 
+  tokens_remove(min_nchar = min_nchar) 
+
+
+# 3) Matriz bag-of-words
+bow <- dfm(tks_disc) %>%
+  dfm_trim(min_docfreq = min_freq, docfreq_type = freq_type)
+
+
+if (tfidf == TRUE){
+  bow <- bow %>% dfm_tfidf()
+}
+
+  
+
+# 4) Transforma em tibble e inclui o target
+dataframe <- bow %>% 
+  as.matrix() %>%
+  as_tibble() %>%
+  janitor::clean_names() %>% 
+  mutate_all(as.numeric)
+
+dataframe$y <- df$presidente
+
+return(list(df=dataframe, bow=bow))
+
+}
+
+
+```
+
+
+```{r}
+
+fbeta_workflow <- function(df, min_nchar = 5, min_freq = 0.05, freq_type = "prop", tfidf = FALSE){
+  
+# Cria ids
+
+df <- df %>% 
+  mutate(id = row_number())
+  
+# Sorteia split-sample
+
+treino <- df %>% 
+  sample_n(0.9 * length(id))
+
+teste <- df %>% 
+  filter(!id %in% treino$id)
+
+
+# BOW usando a base de treino
+
+treino <- bow_treino(treino, "discurso", min_nchar = min_nchar, min_freq = min_freq, freq_type = freq_type, tfidf = tfidf)
+
+
+# Adequa a base de teste
+
+teste_df <- teste %>% 
+  corpus(text_field="discurso") %>% 
+  tokens() %>% 
+  dfm() %>% 
+  dfm_match(featnames(treino$bow)) %>% 
+  as.matrix() %>% 
+  as_tibble() %>% 
+  janitor::clean_names()
+
+teste_df$y <- teste$presidente
+teste_df$y <- as.factor(teste_df$y)
+
+
+# Task
+
+tsk <- as_task_classif(y~., data = treino$df)
+
+# Tibble de resultados
+
+
+out <- tibble(
+  naive = numeric(),
+  tree = numeric(),
+  knn = numeric(),
+  forest = numeric()
+)
+
+# Naive bayes
+
+learner <- lrn("classif.naive_bayes")
+learner$train(tsk)
+prediction = learner$predict_newdata(teste_df)
+
+naive <- prediction$score(msr("classif.fbeta"))
+
+
+# Tree Learner
+
+learner <- lrn("classif.rpart")
+learner$train(tsk)
+
+prediction = learner$predict_newdata(teste_df)
+tree <- prediction$score(msr("classif.fbeta"))
+
+# K-nearest Neighbors
+learner <- lrn("classif.kknn")
+learner$train(tsk)
+
+prediction = learner$predict_newdata(teste_df)
+knn <- prediction$score(msr("classif.fbeta"))
+
+# Random Classification Forest
+
+learner <- lrn("classif.ranger")
+learner$train(tsk)
+
+prediction = learner$predict_newdata(teste_df)
+forest <- prediction$score(msr("classif.fbeta"))
+
+
+
+# Output
+
+out <- rbind(out, c(naive, tree, knn, forest))
+
+
+# Renomeando as colunas
+
+models_fbetas <- out %>% rename(naive = 1, tree=2, knn=3, forest=4)
+
+
+return (models_fbetas)
+
+}
+
+fbeta_workflow(discursos)
+
+```
+
+
+# 3 - Benchmark
+
+Usando as ferramentas que vimos, experimente com os seguintes pré-processamentos:
+
+### a) Usando apenas palavras maiores do que 4 caracteres:
+
+```{r}
+
+fbeta_workflow(discursos, min_nchar = 4)
+
+```
+
+### b) Removendo palavras que não ocorrem em, pelo menos, 10 documentos;
+
+```{r}
+
+fbeta_workflow(discursos, min_freq = 10, freq_type = "count")
+
+```
+
+
+### c) removendo palavras que não ocorrem em, pelo menos, 10% dos documentos:
+
+```{r}
+
+fbeta_workflow(discursos, min_nchar = 0.1)
+
+```
+
+
+### d) Usando TF-IDF para normalizar os elementos da matriz bag of words;
+
+```{r}
+
+fbeta_workflow(discursos, tfidf = TRUE)
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
