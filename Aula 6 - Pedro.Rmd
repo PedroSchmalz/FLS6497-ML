@@ -1,0 +1,470 @@
+---
+title: "Aula 6"
+author: "Pedro Schmalz 10389052"
+date: "2022-10-22"
+output: html_document
+---
+
+```{r, echo=FALSE}
+knitr::opts_chunk$set(echo=F, error=FALSE, warning=FALSE, message=FALSE)
+```
+
+```{r}
+#Pacotes utilizados
+
+if (!require("pacman")) install.packages("pacman"); # O Pacote "pacman" permite carregar os pacotes com menos código
+
+# Carregando os pacotes
+
+pacman::p_load("tidyverse",  "dplyr", "datasets", "ggplot2", "readxl", "haven", "knitr", "reshape2", "broom", "modelr", "stargazer", "jtools", "purrr", "mlr3", "mlr3measures", "mlr3viz", "mlr3learners", "mlr3extralearners", "GGally", "kknn", "glmnet", "quanteda", "janitor", "ranger", "mlr3verse", "igraph", "earth")
+
+devtools::install_github("mlr-org/mlr3extralearners", force = TRUE)
+library(mlr3extralearners)
+```
+
+##Exercícios
+
+## a) Criação de pipelines
+
+Usando *pipelines*, crie três diferentes pré-processamentos para as *features* numéricas da base: a) uma sem transformações; b) outra fazendo estandardização das variáveis; e, c), outra incluindo alguns polinômios. As *pipelines* devem usar regressão linear simples como modelo para predizer a variável `maximum_temprature`.
+
+https://mlr3book.mlr-org.com/pipelines.html#in-depth-pipelines
+https://github.com/FLS-6497/datasets/blob/main/exercicios6.qmd
+
+```{r}
+# Carrega dados
+
+link <- "https://raw.githubusercontent.com/jacobwright32/Web_Scraper_AI_Core_Project/bb4865ae568e23ab8fadb6ea58cf117df2164ef3/web%20scraping/Cleaned%20Data/Brazil_Sao%20Bernardo%20Do%20Campo_Cleaned.csv"
+
+
+dados <- readr::read_csv(link) %>%
+  select_if(is.numeric)
+
+# Cria uma pipeline simples
+#po (pipeline operator), introduces a new feature regarding data 
+
+# Cria uma pipeline simples Exemplo (estandardização)
+
+gr <- po("scale") %>>% 
+  po("learner", learner = lrn("regr.lm")) %>%
+  as_learner()
+
+gr$graph$plot() #exibe fluxo do processo da pipeline
+
+```
+
+
+```{r}
+#First: simple linear model
+
+gr1 <- po("learner", learner = lrn("regr.lm")) %>%
+  as_learner()
+
+gr1$graph$plot()
+
+```
+
+
+```{r}
+
+# Cria uma pipeline com polinomios
+
+gr2 <- po("mutate") %>>% #não tem função automatica dentro do mlr3, preciso criar polinômios 'manualmente'
+  po("scale") %>>% 
+  po("learner", learner = lrn("regr.lm")) %>%
+  as_learner()
+
+gr2$param_set$values$mutate.mutation <- list(
+  teste = ~ cloud_coverage^2 + cloud_coverage^3,
+  teste1 = ~ cloud_coverage^3,
+  teste2 = ~ pressure^2 + pressure^3) #nome da variável criada = ~variáveis que vou utilizar
+  teste3 = ~ pressure^3
+  
+design <- benchmark_grid(
+  as_task_regr(maximum_temprature ~., data = dados),
+  learners = list(gr2),
+  resamplings = rsmp("holdout", ratio = 0.7)
+)
+  
+
+resultados <- benchmark(design)
+resultados$score(msr("regr.rmse"))
+
+
+```
+
+## b) Benchmark
+
+Compare as *pipelines* anteriores rodando 100 vezes cada uma usando *holdout* com 70% das observações em treino, calculando para cada também o `RMSE`. Reporte os resultados por meio de um gráfico de boxplot. Dica: use uma função para encapsular *pipelines*, treino dos modelos e cálculo de métricas de validação.
+
+```{r}
+# Treina a pipeline com 'benchmark_grid' e calcula metrica de validacao
+#testar mais de uma pipeline por vezes, mesmos dados para comparar pipelines 
+
+bench_func <- function(){
+design <- benchmark_grid(
+  tasks = as_task_regr(maximum_temprature ~., data = dados),
+  learners = list(gr, gr1, gr2),
+  resamplings = rsmp("holdout", ratio = 0.7)
+  )
+
+#acessar resultados
+resultados <- benchmark(design)
+resultados$score(msr("regr.rmse"))
+}
+
+bench_func()
+```
+
+
+```{r}
+simulação <- 1:100 %>%
+  map_df(~ bench_func())
+```
+
+
+```{r}
+#Procurar variável (nr ou learner_id)
+#"Usar polinômios melhorou um pouco"
+
+simulação %>% mutate(modelo = case_when(nr == 1 ~ 'gr',
+                                        nr == 2 ~ 'gr1',
+                                        nr == 3 ~ 'gr2')) %>% 
+  ggplot(aes(fill = modelo, y = regr.rmse, x = modelo))+
+  geom_boxplot()
+
+```
+
+## c) Comparação de modelos
+
+Selecione a melhor *pipeline* do exercício anterior e crie outras três novas em cima dela: uma que regressão por `knn` em vez de regressão linear; uma que use MARS (o algoritmo `earth`); e, por fim, uma que use regressão por meio de árvore de decisão (`tree` ou `regr.rpart`). Rode 100 vezes cada *pipeline* e compare novamente os `RMSE` usando um gráfico de boxplot.
+
+Na prática, podemos juntar esta etapa com a etapa b) -> alguns modelos vão melhor com alguns tipos de pré-processamento
+
+```{r}
+# KNN
+
+gr2knn <- po("mutate") %>>% #não tem função automatica dentro do mlr3, preciso criar polinômios 'manualmente'
+  po("scale") %>>% 
+  po("learner", learner = lrn("regr.kknn")) %>%
+  as_learner()
+
+gr2knn$param_set$values$mutate.mutation <- list(
+  teste = ~ cloud_coverage^2 + cloud_coverage^3,
+  teste1 = ~ cloud_coverage^3,
+  teste2 = ~ pressure^2 + pressure^3) #nome da variável criada = ~variáveis que vou utilizar
+  teste3 = ~ pressure^3
+```
+
+
+```{r}
+# Earth
+  
+gr2earth <- po("mutate") %>>% #não tem função automatica dentro do mlr3, preciso criar polinômios 'manualmente'
+  po("scale") %>>% 
+  po("learner", learner = lrn("regr.earth")) %>%
+  as_learner()
+
+gr2earth$param_set$values$mutate.mutation <- list(
+  teste = ~ cloud_coverage^2 + cloud_coverage^3,
+  teste1 = ~ cloud_coverage^3,
+  teste2 = ~ pressure^2 + pressure^3) #nome da variável criada = ~variáveis que vou utilizar
+  teste3 = ~ pressure^3
+```
+
+
+```{r}
+# Tree
+  
+gr2tree <- po("mutate") %>>% #não tem função automatica dentro do mlr3, preciso criar polinômios 'manualmente'
+  po("scale") %>>% 
+  po("learner", learner = lrn("regr.rpart")) %>%
+  as_learner()
+
+gr2tree$param_set$values$mutate.mutation <- list(
+  teste = ~ cloud_coverage^2 + cloud_coverage^3,
+  teste1 = ~ cloud_coverage^3,
+  teste2 = ~ pressure^2 + pressure^3) #nome da variável criada = ~variáveis que vou utilizar
+  teste3 = ~ pressure^3
+```
+
+
+```{r}
+# Benchmark 
+
+bench_func1 <- function(){
+design <- benchmark_grid(
+  tasks = as_task_regr(maximum_temprature ~., data = dados),
+  learners = list(gr2knn, gr2tree, gr2earth),
+  resamplings = rsmp("holdout", ratio = 0.7)
+  )
+
+#acessar resultados
+resultados <- benchmark(design)
+resultados$score(msr("regr.rmse"))
+}
+
+bench_func()
+```
+
+
+```{r}
+# Simulações
+
+
+simulação1 <- 1:100 %>%
+  map_df(~ bench_func1())
+
+
+```
+
+
+```{r}
+#Procurar variável (nr ou learner_id)
+#"Usar polinômios melhorou um pouco"
+
+simulação1 %>% mutate(modelo = case_when(nr == 1 ~ "gr2knn",
+                                         nr == 2 ~ "gr2tree",
+                                         nr == 3 ~ "gr2earth")) %>% 
+  ggplot(aes(fill=modelo, y = regr.rmse, x = modelo))+
+  geom_boxplot()+
+  theme_minimal()
+
+```
+## d) Validação
+
+Usando a melhor *pipeline* encontrada no exercício anterior, faça validação nas seguintes bases de dados:
+
+::: {.panel-tabset}
+Seleciono a melhor pipeline (polinômio) e retreino o modelo sobre os dados completos
+
+```{r}
+# Clima em Campinas
+campinas <- "https://raw.githubusercontent.com/jacobwright32/Web_Scraper_AI_Core_Project/bb4865ae568e23ab8fadb6ea58cf117df2164ef3/web%20scraping/Cleaned%20Data/Brazil_Campinas_Cleaned.csv"
+campinas <- readr::read_csv(campinas)
+ 
+
+# Clima em Southampton
+southampton <- "https://raw.githubusercontent.com/jacobwright32/Web_Scraper_AI_Core_Project/master/web%20scraping/Cleaned%20Data/United%20Kingdom_Southampton_Cleaned.csv"
+southampton <- readr::read_csv(southampton)
+```
+
+
+```{r}
+#Validação
+
+tsk <- as_task_regr(maximum_temprature ~., data = dados)
+modelo <- gr2earth$train(tsk) #melhor pipeline treinada em toda a base
+
+pred <- modelo$predict_newdata(campinas)
+campinas$pred <- pred$response
+pred$score(msr("regr.rmse"))
+
+pred <- modelo$predict_newdata(southampton)
+southampton$pred <- pred$response
+pred$score(msr("regr.rmse"))
+
+```
+
+## E) Visualização
+
+Usando os resultados da melhor pipeline, plote a relação entre predições e valores reais de maximum_temprature nas duas bases de validação.
+
+```{r}
+# Campinas
+
+pred <- modelo$predict_newdata(campinas)
+campinas$pred <- pred$response
+
+pred %>% 
+  ggplot(aes(x = truth, y = response.V1))+
+  geom_point()+
+  geom_smooth()+
+  theme_minimal()+
+  labs(title = "Predição e Valores reais (Campinas)",
+       y = "Predição",
+       x = "Real")
+
+```
+```{r}
+
+# Southampton
+
+pred <- modelo$predict_newdata(southampton)
+southampton$pred <- pred$response
+
+pred %>% 
+  ggplot(aes(x = truth, y = response.V1))+
+  geom_point()+
+  geom_smooth()+
+  theme_minimal()+
+  labs(title = "Predição e Valores reais (Southampton)",
+       y = "Predição",
+       x = "Real")
+
+```
+
+# 2 - Árvores de decisão e bag-of-words
+
+Como vimos, pré-processamento deve ser aplicado antes de fazermos split sample de validação (i.e., criar amostras de teste e de treino). Agora, implemente um workflow que leva isso em conta. Para tanto, você deverá criar uma função que separe textos em treino e teste, que aplique pré-processamento apenas na amostra de treino e que, depois, replique ele na amostra de teste para, então, rodar um algoritmo e calcular alguma métrica de validação.
+
+Para esse exercício, será necessário carregar uma base de discursos presidenciais feitos por Dilma Rousseff e Michel Temer em parte de seus mandatos:
+
+```{r}
+link <- "https://github.com/FLS-6497/datasets/raw/main/aula5/discursos_presidenciais.csv"
+discursos <- readr::read_csv2(link)
+```
+Também precisaremos fazer pré-processamento dos textos:
+
+
+```{r}
+library(mlr3verse)
+
+# Exemplo
+gr <- po("textvectorizer", 
+         remove_punct = TRUE, 
+         remove_numbers = TRUE,
+         min_termfreq = 20) 
+
+```
+
+## a) Pipelines
+
+Usando pipelines, crie duas pipelines diferentes de pré-processamentos para as os discursos da base: a) uma que só mantenha termos que aparecem em pelo menos 20% dos documentos (ou ao menos em 20 documentos); outra igual a anterior que permita bi-gramas. As pipelines devem usar Naive Bayes como modelo para predizer a variável planalto.
+
+```{r}
+# Pipeline 1
+
+gr1text <- po("textvectorizer",
+          param_vals = list(stopwords_language = "pt", remove_punct = TRUE, remove_numbers = TRUE, min_termfreq = 20, n = 1)) %>>% 
+  po("learner", learner = lrn("classif.naive_bayes")) %>%
+  as_learner()
+
+
+gr1text$graph$plot()
+```
+
+
+```{r}
+# Pipeline 2
+
+gr2text <- po("textvectorizer",
+          param_vals = list(stopwords_language = "pt", remove_punct = TRUE, remove_numbers = TRUE, min_termfreq = 20, n = 2)) %>>% 
+  po("learner", learner = lrn("classif.naive_bayes")) %>%
+  as_learner() 
+
+
+gr2text$graph$plot()
+
+```
+
+## B) Benchmark
+
+Rode cada pipeline 10 vezes, calculando o F1 de cada predição do modelo na base de teste que tenha 20% dos discursos. Plote os resultados usando boxplot.
+
+```{r}
+# Benchmark 1
+
+discursos2 <- select(discursos, -c(data)) %>% mutate(presidente = case_when(presidente == "Dilma" ~ 1,
+                                                                            presidente == "Temer" ~ 2))
+
+bench_func2 <- function(){
+design <- benchmark_grid(
+  tasks = as_task_classif(presidente ~., data = discursos2),
+  learners = list(gr1text, gr2text),
+  resamplings = rsmp("holdout", ratio = 0.7)
+  )
+
+#acessar resultados
+resultados <- benchmark(design)
+resultados$score(msr("classif.fbeta"))
+}
+
+bench_func2()
+
+```
+
+
+```{r}
+simulaçãotext1 <- 1:10 %>%
+  map_df(~ bench_func2())
+
+```
+
+```{r}
+simulaçãotext1 %>% mutate(modelo = case_when(nr == 1 ~ "gr1text",
+                                         nr == 2 ~ "gr2text")) %>% 
+  ggplot(aes(fill=modelo, y = classif.fbeta, x = modelo))+
+  geom_boxplot()+
+  theme_minimal()
+
+```
+
+# c) Modelos
+
+Use a melhor pipeline para criar outra, que em vez de Naive Bayes use árvore de decisão (classif.rpart, no caso do mlr3). Rode 10 vezes cada uma, calcule e reporte o F1 para cada uma.
+
+
+```{r}
+
+# Tree
+
+gr2tree <- po("textvectorizer",
+          param_vals = list(stopwords_language = "pt", remove_punct = TRUE, remove_numbers = TRUE, min_termfreq = 20, n = 2)) %>>% 
+  po("learner", learner = lrn("classif.rpart")) %>%
+  as_learner()
+```
+
+
+```{r}
+# Benchmark 2
+
+
+bench_func2 <- function(){
+design <- benchmark_grid(
+  tasks = as_task_classif(presidente ~., data = discursos2),
+  learners = list(gr2text, gr2tree),
+  resamplings = rsmp("holdout", ratio = 0.7)
+  )
+
+#acessar resultados
+resultados <- benchmark(design)
+resultados$score(msr("classif.fbeta"))
+}
+
+bench_func2()
+```
+
+
+```{r}
+simulaçãotext2 <- 1:10 %>%
+  map_df(~ bench_func2())
+
+```
+
+
+```{r}
+simulaçãotext2 %>% mutate(modelo = case_when(nr == 1 ~ "gr2text",
+                                         nr == 2 ~ "gr2tree")) %>% 
+  ggplot(aes(fill=modelo, y = classif.fbeta, x = modelo))+
+  geom_boxplot() +
+  theme_minimal()
+
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
