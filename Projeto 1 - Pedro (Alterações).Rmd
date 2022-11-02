@@ -1,0 +1,815 @@
+---
+title: "Projeto 1 - FLS 6497"
+author: "Pedro Schmalz 10389052"
+date: "2022-10-22"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+# Prevendo a autoria de discursos presidenciais.
+
+Neste trabalho, utilizaremos aprendizado de máquina (*machine learning*) para prever a autoria de discursos presidenciais.
+
+```{r, echo=FALSE}
+knitr::opts_chunk$set(echo=F, error=FALSE, warning=FALSE, message=FALSE)
+
+# Hiding mlr3 benchmark results
+
+lgr::get_logger("mlr3")$set_threshold("warn")
+```
+
+```{r, echo=FALSE, results = "hide"}
+#Pacotes utilizados
+
+if (!require("pacman")) install.packages("pacman"); # O Pacote "pacman" permite carregar os pacotes com menos código
+
+# Carregando os pacotes
+
+pacman::p_load("tidyverse",  "dplyr", "datasets", "ggplot2", "readxl", "haven", "knitr", "reshape2", "broom", "modelr", "stargazer", "jtools", "purrr", "mlr3", "mlr3measures", "mlr3viz", "mlr3learners", "mlr3extralearners", "GGally", "kknn", "glmnet", "quanteda", "janitor", "ranger", "mlr3verse", "igraph", "earth", "kableExtra")
+
+library(mlr3extralearners)
+
+```
+
+## Dados
+
+Temos dois bancos distintos, um de treinamento e um de validação. Nestes bancos, há discursos de três presidentes: Lula, Dilma e Temer.
+
+```{r, echo = FALSE, results='hide'}
+link <- "https://github.com/FLS-6497/datasets/blob/main/projeto1/discursos_pres_internacionais.csv?raw=true"
+discursos <- readr::read_csv2(link)
+
+link <- "https://github.com/FLS-6497/datasets/blob/main/projeto1/discursos_pres_internacionais_validacao.csv?raw=true"
+validacao <- readr::read_csv2(link)
+
+```
+
+Nosso banco de treino se encontra dividido entre as classes da seguinte maneira:
+
+```{r}
+
+discursos %>% 
+  ggplot()+
+  geom_bar(aes(x = reorder(presidente, presidente, function(x) length(x))), fill = "steelblue")+
+  theme_minimal()+
+  labs(title = "Figura 1 - Número de discursos por presidente",
+       x = "Presidente",
+       y = "Contagem")
+```
+
+Podemos ver que Temer é o presidente com menor número de discursos, mas a desproporcionalidade não parece ser grande o suficiente para gerar maiores problemas.
+
+## Testando diferentes pré-processamentos
+
+Como forma de avaliar o impacto do pré-processamento na performance dos modelos, irei testar alguns pré-processamentos com um modelo (Naive-Bayes). As principais alterações no pré-processamento serão no número de ngrams (1, 2 e 3) e se há a opção do stopwords = "pt". Com isso, serão comparadas 3\*2 = 6 pipelines diferentes de começo. A tabela 1 abaixo resume as diferentes pipelines:
+
+### Tabela 1 - Diferentes Pipelines de pré-processamento
+
+|              |       |           |
+|:------------:|:-----:|:---------:|
+|   Pipeline   | ngram | stopwords |
+| 1 (Baseline) |   1   |    não    |
+|      2       |   1   |    sim    |
+|      3       |   2   |    não    |
+|      4       |   2   |    sim    |
+|      5       |   3   |    não    |
+|      6       |   3   |    sim    |
+
+```{r, echo=FALSE, results = "hide"}
+# Pipeline 1 (bigrams)
+
+library(mlr3verse)
+
+
+
+# Pipeline 1 - Baseline (n = 1)
+
+termfreq = 20
+n = 1
+
+gr <- po("textvectorizer",
+          param_vals = list(remove_punct = TRUE, remove_numbers = TRUE, min_termfreq = termfreq, n = n)) %>>% 
+  po("learner", learner = lrn("classif.naive_bayes", predict_type = 'prob')) %>%
+  as_learner() 
+
+
+# Pipeline 2 (n = 1 + stopwords(pt))
+
+gr2 <- po("textvectorizer",
+          param_vals = list(stopwords_language = "pt", remove_punct = TRUE, remove_numbers = TRUE, min_termfreq = termfreq, n = n)) %>>% 
+  po("learner", learner = lrn("classif.naive_bayes"), predict_type='prob') %>%
+  as_learner()
+
+
+# Pipeline 3 (bigrams)
+
+n = 2
+
+gr3 <- po("textvectorizer",
+          param_vals = list(remove_punct = TRUE, remove_numbers = TRUE, min_termfreq = termfreq, n = n)) %>>% 
+  po("learner", learner = lrn("classif.naive_bayes"), predict_type='prob') %>%
+  as_learner()
+
+
+# Pipeline 4 (bigrams + stopwords)
+
+
+gr4 <- po("textvectorizer",
+          param_vals = list(stopwords_language = "pt", remove_punct = TRUE, remove_numbers = TRUE, min_termfreq = termfreq, n = n)) %>>% 
+  po("learner", learner = lrn("classif.naive_bayes"), predict_type='prob') %>%
+  as_learner()
+
+
+
+# Pipeline 5 (trigrams)
+
+n = 3
+
+gr5<- po("textvectorizer",
+          param_vals = list(remove_punct = TRUE, remove_numbers = TRUE, min_termfreq = termfreq, n = n)) %>>% 
+  po("learner", learner = lrn("classif.naive_bayes"), predict_type='prob') %>%
+  as_learner()
+
+
+# Pipeline 6 (trigrams + stopwords(pt))
+
+gr6<- po("textvectorizer",
+          param_vals = list(stopwords_language = "pt", remove_punct = TRUE, remove_numbers = TRUE, min_termfreq = termfreq, n = n)) %>>% 
+  po("learner", learner = lrn("classif.naive_bayes"), predict_type='prob') %>%
+  as_learner()
+
+```
+
+## Benchmark (Pré-processamentos)
+
+Nesta seção, faremos o benchmark dos pré-processamentos e compararemos os resultados do modelo utilizando o Naive Bayes como learner para todos os pré-processamentos. Devido à exigências do classificador, removi a coluna de data e transformei a variável de presidente em numérica, por ordem de mandato (Lula, 1; Dilma 2 e Temer, 3).
+
+```{r}
+
+discursos2 <- select(discursos, -c(data)) %>% mutate(presidente = case_when(presidente == "Lula" ~ 1, 
+                                                                           presidente == "Dilma" ~ 2,
+                                                                           presidente == "Temer" ~ 3))
+```
+
+```{r, echo = FALSE, results = 'hide'}
+
+# Benchmark 1
+
+bench_func <- function(){
+design <- benchmark_grid(
+  tasks = as_task_classif(presidente ~., data = discursos2),
+  learners = list(gr,gr2,gr3,gr4,gr5,gr6),
+  resamplings = rsmp("holdout", ratio = 0.7)
+  )
+
+#acessar resultados
+resultados <- benchmark(design)
+resultados$score(msrs(c("classif.acc", "classif.bacc", "classif.ce", "classif.mbrier")))
+}
+
+prel_res <- bench_func() %>% select(nr, classif.acc, classif.bacc, classif.ce, classif.mbrier)
+```
+
+A tabela 2 mostra os resultados de uma iteração:
+
+```{r}
+prel_res %>% mutate(Pipeline = case_when(nr == 1 ~ "baseline",
+                                        nr == 2 ~ "baseline+stop",
+                                        nr == 3 ~ "bigrams",
+                                        nr == 4 ~ "bigrams+stopwords",
+                                        nr == 5 ~ "trigrams",
+                                        nr == 6 ~ "trigrams+stopwords"),
+                     "Accuracy" = classif.acc,
+                     "Bal. Acc." = classif.bacc,
+                     "Brier Score" = classif.mbrier,
+                     "Class. Error" = classif.ce) %>%
+  select(c("Pipeline", "Accuracy", "Bal. Acc.", "Brier Score", "Class. Error")) %>%
+  kbl(caption = " Tabela 2 - Perfomance de cada pipeline em uma iteração") %>% kable_classic_2(full_width = F)
+```
+
+O pipeline que nos serve como baseline parece ter obtido o melhor resultado. De forma a confirmar isto, repetimos a operação 10x e computamos os resultados na figura 1:
+
+```{r}
+
+
+simulação <- 1:10 %>% 
+  map_df(~ bench_func())
+```
+
+```{r}
+
+simulação %>% mutate(Pipeline = case_when(nr == 1 ~ "baseline",
+                                        nr == 2 ~ "baseline+stop",
+                                        nr == 3 ~ "bigrams",
+                                        nr == 4 ~ "bigrams+stopwords",
+                                        nr == 5 ~ "trigrams",
+                                        nr == 6 ~ "trigrams+stopwords"),
+                     "Accuracy" = classif.acc,
+                     "Bal. Acc." = classif.bacc,
+                     "Brier Score" = classif.mbrier,
+                     "Class. Error" = classif.ce) %>%
+  select(c("Accuracy", "Bal. Acc.", "Brier Score", "Class. Error", "Pipeline")) %>%
+  melt(., id = ) %>% 
+  ggplot(aes(fill=Pipeline, y = value, x = variable))+
+  geom_boxplot()+
+  theme_minimal()+
+  labs(title = " Figura 2 - Performance de cada pipeline",
+       y = "Valor",
+       x = "Métricas",
+    caption = "Note: the lower the Brier score is for a set of predictions, the better the predictions are calibrated.")
+
+```
+
+o baseline com ngram = 1 e sem a correção de stop-words obteve melhores resultados. Portanto, ele será o utilizados para a comparação dos modelos. Na segunda parte, utilizaremos quatro modelos com o primeiro pipeline: o Naive Bayes, Tree, K-nearest Neighbors, e Random Forest. A tabela 3 mostra os resultados dos modelos em uma iteração.
+
+```{r}
+
+# grnaive
+
+n = 1
+termfreq = 20
+
+grnaive <- po("textvectorizer",
+          param_vals = list(remove_punct = TRUE, remove_numbers = TRUE, min_termfreq = termfreq, n = n)) %>>% 
+  po("learner", learner = lrn("classif.naive_bayes", predict_type = 'prob')) %>%
+  as_learner() 
+
+# grtree
+
+grtree <- po("textvectorizer",
+          param_vals = list(remove_punct = TRUE, remove_numbers = TRUE, min_termfreq = termfreq, n = n)) %>>% 
+  po("learner", learner = lrn("classif.rpart", predict_type = 'prob')) %>%
+  as_learner() 
+
+# grknn
+
+grknn <- po("textvectorizer",
+          param_vals = list(remove_punct = TRUE, remove_numbers = TRUE, min_termfreq = termfreq, n = n)) %>>% 
+  po("learner", learner = lrn("classif.kknn", predict_type = 'prob')) %>%
+  as_learner() 
+
+# grforest
+
+grforest <- po("textvectorizer",
+          param_vals = list(remove_punct = TRUE, remove_numbers = TRUE, min_termfreq = termfreq, n = n)) %>>% 
+  po("learner", learner = lrn("classif.ranger", predict_type = 'prob')) %>%
+  as_learner() 
+
+
+```
+
+```{r}
+
+
+# Benchmark 2
+
+
+bench_func2 <- function(ratio = 0.7){
+design <- benchmark_grid(
+  tasks = as_task_classif(presidente ~., data = discursos2),
+  learners = list(grnaive, grtree, grknn, grforest),
+  resamplings = rsmp("holdout", ratio = ratio)
+  )
+
+#acessar resultados
+resultados <- benchmark(design)
+resultados$score(msrs(c("classif.acc", "classif.bacc", "classif.ce", "classif.mbrier")))
+}
+
+prel_res <- bench_func2() %>% select(nr, classif.acc, classif.bacc, classif.ce, classif.mbrier)
+
+
+```
+
+```{r}
+prel_res %>% mutate(Modelo = case_when(nr == 1 ~ "Naive Bayes (Baseline)",
+                                        nr == 2 ~ "Tree",
+                                        nr == 3 ~ "KNN",
+                                        nr == 4 ~ "Forest"),
+                     "Accuracy" = classif.acc,
+                     "Bal. Acc." = classif.bacc,
+                     "Brier Score" = classif.mbrier,
+                     "Class. Error" = classif.ce) %>%
+  select(c("Modelo", "Accuracy", "Bal. Acc.", "Brier Score", "Class. Error")) %>%
+  kbl(caption = " Tabela 3 - Perfomance de cada modelo em uma iteração") %>% kable_classic_2(full_width = F)
+```
+
+Novamente, confirmamos o resultado em uma simulação de 10 iterações, representado na figura 2
+
+```{r}
+
+simulação2 <- 1:10 %>% 
+  map_df(~ bench_func2())
+```
+
+```{r}
+
+simulação2 %>% mutate(Pipeline = case_when(nr == 1 ~ "naive",
+                                        nr == 2 ~ "tree",
+                                        nr == 3 ~ "knn",
+                                        nr == 4 ~ "forest"),
+                     "Accuracy" = classif.acc,
+                     "Bal. Acc." = classif.bacc,
+                     "Brier Score" = classif.mbrier,
+                     "Class. Error" = classif.ce) %>%
+  select(c("Accuracy", "Bal. Acc.", "Brier Score", "Class. Error", "Pipeline"))  %>% 
+  melt(.) %>% 
+  ggplot(aes(fill=Pipeline, y = value, x = variable))+
+  geom_boxplot()+
+  theme_minimal()+
+  labs(title = "Figura 3 - Performance de cada modelo (ratio = 0.7)",
+       y = "Valor",
+       x = "Métricas",
+    caption = "Note: the lower the Brier score is for a set of predictions, the better the predictions are calibrated.")
+
+```
+### Bagging
+
+
+Pegaremos os modelos (forest e tree), e testaremos eles contra alguns baggings ensembles (com e sem subsample) :
+
+```{r}
+
+# grnaivebag
+
+n = 1
+termfreq = 20
+
+grnaivebag <- po("textvectorizer",
+          param_vals = list(remove_punct = TRUE, remove_numbers = TRUE, min_termfreq = termfreq, n = n)) %>>% 
+  po("subsample", frac = 1, replace = TRUE) %>>% 
+  po("learner", learner = lrn("classif.naive_bayes", predict_type = 'prob')) %>%
+  ppl("greplicate", ., 10) %>>% 
+  po("classifavg", innum = 10) %>% 
+  as_learner() 
+
+# naive subsample
+
+grnaivesub <- po("textvectorizer",
+          param_vals = list(remove_punct = TRUE, remove_numbers = TRUE, min_termfreq = termfreq, n = n)) %>>% 
+  po("subsample", frac = 0.7, replace = FALSE) %>>% 
+  po("learner", learner = lrn("classif.naive_bayes", predict_type = 'prob')) %>%
+  ppl("greplicate", ., 10) %>>% 
+  po("classifavg", innum = 10) %>% 
+  as_learner() 
+
+# grtreebag
+
+grtreebag <- po("textvectorizer",
+          param_vals = list(remove_punct = TRUE, remove_numbers = TRUE, min_termfreq = termfreq, n = n)) %>>% 
+  po("subsample", frac = 1, replace = TRUE) %>>% 
+  po("learner", learner = lrn("classif.rpart", predict_type = 'prob')) %>%
+  ppl("greplicate", ., 10) %>>% 
+  po("classifavg", innum = 10) %>% 
+  as_learner() 
+
+# grtreesub
+
+grtreesub <- po("textvectorizer",
+          param_vals = list(remove_punct = TRUE, remove_numbers = TRUE, min_termfreq = termfreq, n = n)) %>>% 
+  po("subsample", frac = 0.7, replace = FALSE) %>>% 
+  po("learner", learner = lrn("classif.rpart", predict_type = 'prob')) %>%
+  ppl("greplicate", ., 10) %>>% 
+  po("classifavg", innum = 10) %>% 
+  as_learner() 
+
+# grknnbag
+
+grknnbag <- po("textvectorizer",
+          param_vals = list(remove_punct = TRUE, remove_numbers = TRUE, min_termfreq = termfreq, n = n)) %>>% 
+  po("subsample", frac = 1, replace = TRUE) %>>% 
+  po("learner", learner = lrn("classif.kknn", predict_type = 'prob')) %>%
+  ppl("greplicate", ., 10) %>>% 
+  po("classifavg", innum = 10) %>% 
+  as_learner() 
+
+# grknnsub
+
+grknnsub <- po("textvectorizer",
+          param_vals = list(remove_punct = TRUE, remove_numbers = TRUE, min_termfreq = termfreq, n = n)) %>>% 
+  po("subsample", frac = 0.7, replace = FALSE) %>>% 
+  po("learner", learner = lrn("classif.kknn", predict_type = 'prob')) %>%
+  ppl("greplicate", ., 10) %>>% 
+  po("classifavg", innum = 10) %>% 
+  as_learner() 
+
+# grforestbag
+
+grforestbag <- po("textvectorizer",
+          param_vals = list(remove_punct = TRUE, remove_numbers = TRUE, min_termfreq = termfreq, n = n)) %>>% 
+  po("subsample", frac = 1, replace = TRUE) %>>% 
+  po("learner", learner = lrn("classif.ranger", predict_type = 'prob')) %>%
+  ppl("greplicate", ., 10) %>>% 
+  po("classifavg", innum = 10) %>% 
+  as_learner() 
+
+# grforestsub
+
+grforestsub <- po("textvectorizer",
+          param_vals = list(remove_punct = TRUE, remove_numbers = TRUE, min_termfreq = termfreq, n = n)) %>>% 
+  po("subsample", frac = 0.7, replace = FALSE) %>>% 
+  po("learner", learner = lrn("classif.ranger", predict_type = 'prob')) %>%
+  ppl("greplicate", ., 10) %>>% 
+  po("classifavg", innum = 10) %>% 
+  as_learner() 
+
+
+# Extra: Comparando o ranger com o RandomForest
+
+grrf <-  po("textvectorizer",
+          param_vals = list(remove_punct = TRUE, remove_numbers = TRUE, min_termfreq = termfreq, n = n)) %>>% 
+  po("learner", learner = lrn("classif.randomForest", ntree=100, predict_type = "prob")) %>% 
+  as_learner()
+
+
+grrfbag <-  po("textvectorizer",
+          param_vals = list(remove_punct = TRUE, remove_numbers = TRUE, min_termfreq = termfreq, n = n)) %>>% 
+  po("subsample", frac = 1, replace = TRUE) %>>%
+  po("learner", learner = lrn("classif.randomForest", ntree=100, predict_type = "prob")) %>% 
+  as_learner()
+
+grrfsub <-  po("textvectorizer",
+          param_vals = list(remove_punct = TRUE, remove_numbers = TRUE, min_termfreq = termfreq, n = n)) %>>% 
+  po("subsample", frac = 0.7, replace = FALSE) %>>%
+  po("learner", learner = lrn("classif.randomForest", ntree=100, predict_type = "prob")) %>% 
+  as_learner()
+
+
+```
+
+
+```{r}
+
+LEARNERS = list(grnaive, grnaivebag, grnaivesub, 
+                grtree, grtreebag, grtreesub, 
+                grknn, grknnbag, grknnsub, 
+                grforest, grforestbag, grforestsub,
+                grrf, grrfbag, grrfsub)
+
+bench_func3 <- function(ratio = 0.7){
+design <- benchmark_grid(
+  tasks = as_task_classif(presidente ~., data = discursos2),
+  learners = LEARNERS,
+  resamplings = rsmp("holdout", ratio = ratio)
+  )
+
+#acessar resultados
+resultados <- benchmark(design)
+resultados$score(msrs(c("classif.acc", "classif.bacc", "classif.ce", "classif.mbrier")))
+}
+
+bags_sub <- bench_func3() %>% select(nr, classif.acc, classif.bacc, classif.ce, classif.mbrier)
+
+```
+
+
+Os resultados de uma iteração aparecem na tabela 4:
+
+```{r}
+bags_sub %>% mutate(Modelo = case_when(nr == 1 ~ "naive",
+                                        nr == 2 ~ "naive (bag)",
+                                        nr == 3 ~ "naive (sub)",
+                                        nr == 4 ~ "tree",
+                                        nr == 5 ~ "tree (bag)",
+                                        nr == 6 ~ "tree (sub)",
+                                        nr == 7 ~ "knn",
+                                        nr == 8 ~ "knn (bag)",
+                                        nr == 9 ~ "knn (sub)",
+                                        nr == 10 ~ "ranger",
+                                        nr == 11 ~ "ranger (bag)",
+                                        nr == 12 ~ "ranger (sub)",
+                                        nr == 13 ~ "rf",
+                                        nr == 14 ~ "rf (bag)",
+                                        nr == 15 ~ "rf (sub)"),
+                     "Accuracy" = classif.acc,
+                     "Bal. Acc." = classif.bacc,
+                     "Brier Score" = classif.mbrier,
+                     "Class. Error" = classif.ce) %>%
+  select(c("Modelo", "Accuracy", "Bal. Acc.", "Brier Score", "Class. Error")) %>%
+  kbl(caption = " Tabela 4 - Perfomance de cada modelo em uma iteração") %>% kable_classic_2(full_width = F)
+```
+
+
+
+```{r}
+simulação3 <- 1:10 %>%
+  map_df(~ bench_func3(ratio = 0.7))
+```
+
+```{r}
+simulação3 <- simulação3 %>% mutate(Pipeline = case_when(nr == 1 ~ "naive",
+                                        nr == 2 ~ "naive (bag)",
+                                        nr == 3 ~ "naive (sub)",
+                                        nr == 4 ~ "tree",
+                                        nr == 5 ~ "tree (bag)",
+                                        nr == 6 ~ "tree (sub)",
+                                        nr == 7 ~ "knn",
+                                        nr == 8 ~ "knn (bag)",
+                                        nr == 9 ~ "knn (sub)",
+                                        nr == 10 ~ "ranger",
+                                        nr == 11 ~ "ranger (bag)",
+                                        nr == 12 ~ "ranger (sub)",
+                                        nr == 13 ~ "rf",
+                                        nr == 14 ~ "rf (bag)",
+                                        nr == 15 ~ "rf (sub)"),
+                     "Accuracy" = classif.acc,
+                     "Bal. Acc." = classif.bacc,
+                     "Brier Score" = classif.mbrier,
+                     "Class. Error" = classif.ce) %>%
+  select(c("Accuracy", "Bal. Acc.", "Brier Score", "Class. Error", "Pipeline"))
+```
+
+
+```{r}
+
+# accuracy
+
+
+simulação3 %>%
+  melt(., id = ) %>% 
+  filter(variable == "Accuracy") %>% 
+  ggplot(aes(fill=Pipeline, y = value, x = variable))+
+  geom_boxplot()+
+  theme_minimal()+
+  labs(title = "Figura 4 - Performance de cada modelo (Accuracy)",
+       y = "Valor",
+       x = "Métrica")
+```
+
+```{r}
+simulação3 %>%
+  melt(., id = ) %>% 
+  filter(variable == "Bal. Acc.") %>% 
+  ggplot(aes(fill=Pipeline, y = value, x = variable))+
+  geom_boxplot()+
+  theme_minimal()+
+  labs(title = "Figura 5 - Performance de cada modelo (Bal. Accuracy)",
+       y = "Valor",
+       x = "Métrica")
+```
+
+```{r}
+simulação3 %>%
+  melt(., id = ) %>% 
+  filter(variable == "Brier Score") %>% 
+  ggplot(aes(fill=Pipeline, y = value, x = variable))+
+  geom_boxplot()+
+  theme_minimal()+
+  labs(title = "Figura 6 - Performance de cada modelo (Brier Score)",
+       y = "Valor",
+       x = "Métrica",
+    caption = "Note: the lower the Brier score is for a set of predictions, the better the predictions are calibrated.")
+```
+
+```{r}
+simulação3 %>%
+  melt(., id = ) %>% 
+  filter(variable == "Class. Error") %>% 
+  ggplot(aes(fill=Pipeline, y = value, x = variable))+
+  geom_boxplot()+
+  theme_minimal()+
+  labs(title = "Figura 6  - Performance de cada modelo (Class. Error)",
+       y = "Valor",
+       x = "Métrica",
+    caption = "Note: the lower the Brier score is for a set of predictions, the better the predictions are calibrated.")
+```
+
+### Ensemble em cima de ensemble
+
+Iremos fazer um stack dos três melhores modelos nas simulações(ranger, ranger(bag), rf), com o multinomial log-linear model como agregador:
+
+```{r}
+
+# grforest
+
+grforest <- po("textvectorizer", param_vals = list(remove_punct = TRUE, remove_numbers = TRUE, min_termfreq = termfreq, n = n)) %>>% 
+  po("learner", learner = lrn("classif.ranger", predict_type = 'prob')) %>% 
+  po("learner_cv", .)
+
+
+# grforestbag
+
+grforestbag <- po("textvectorizer", param_vals = list(remove_punct = TRUE, remove_numbers = TRUE, min_termfreq = termfreq, n = n)) %>>% 
+  po("subsample", frac = 1, replace = TRUE) %>>% 
+  po("learner", learner = lrn("classif.ranger", predict_type = 'prob')) %>%
+  ppl("greplicate", ., 10) %>>% 
+  po("classifavg", innum = 10) %>% 
+  po("learner_cv", .)
+
+grrf <-  po("textvectorizer",
+          param_vals = list(remove_punct = TRUE, remove_numbers = TRUE, min_termfreq = termfreq, n = n)) %>>% 
+  po("learner", learner = lrn("classif.randomForest", ntree=100, predict_type = "prob")) %>% 
+  po("learner_cv", .)
+
+
+stack <- list(grforest, grforestbag, grrf) %>% 
+  gunion() %>>%
+  po("featureunion") %>>%
+  po("learner", learner = lrn("classif.multinom", predict_type = 'prob')) %>% 
+  as_learner()
+
+
+bench_func4 <- function(ratio = 0.7){
+design <- benchmark_grid(
+  tasks = as_task_classif(presidente ~., data = discursos2),
+  learners = list(stack),
+  resamplings = rsmp("holdout", ratio = ratio)
+  )
+
+#acessar resultados
+resultados <- benchmark(design)
+resultados$score(msrs(c("classif.acc", "classif.bacc", "classif.ce", "classif.mbrier")))
+}
+
+ensemble <- bench_func4() %>% select(nr, classif.acc, classif.bacc, classif.ce, classif.mbrier)
+
+
+```
+```{r}
+ensemble %>% mutate(Modelo = case_when(nr == 1 ~ "ensemble"),
+                     "Accuracy" = classif.acc,
+                     "Bal. Acc." = classif.bacc,
+                     "Brier Score" = classif.mbrier,
+                     "Class. Error" = classif.ce) %>%
+  select(c("Modelo", "Accuracy", "Bal. Acc.", "Brier Score", "Class. Error")) %>%
+  kbl(caption = " Tabela 5 - Perfomance do stacking em uma iteração") %>% kable_classic_2(full_width = F)
+```
+Novamente, faremos uma simulação para ver se há muita variação nos resultados do modelo
+
+```{r}
+simulação4 <- 1:10 %>% 
+  map_df(~ bench_func4(ratio = 0.7))
+```
+
+```{r}
+simulação4 %>% mutate(Pipeline = case_when(nr == 1 ~ "stacking"),
+                     "Accuracy" = classif.acc,
+                     "Bal. Acc." = classif.bacc,
+                     "Brier Score" = classif.mbrier,
+                     "Class. Error" = classif.ce) %>%
+  select(c("Accuracy", "Bal. Acc.", "Brier Score", "Class. Error", "Pipeline")) %>% 
+  melt(., id = ) %>% 
+  ggplot(aes(y = value, x = variable))+
+  geom_boxplot()+
+  theme_minimal()+
+  labs(title = "Figura 7 - Performance do Stacking",
+       y = "Valor",
+       x = "Métricas")
+```
+
+### Boosting
+
+Por fim, compararemos os resultados do stacking feito com os modelos: o gradient boosting e o extreme gradient boosting:
+
+```{r}
+
+# Stack
+
+stack <- list(grforest, grforestbag, grrf) %>% 
+  gunion() %>>%
+  po("featureunion") %>>%
+  po("learner", learner = lrn("classif.multinom", predict_type = 'prob')) %>% 
+  as_learner()
+
+
+# Extreme boosting
+
+gr_xgboost <- po("textvectorizer", param_vals = list(remove_punct = TRUE, remove_numbers = TRUE, min_termfreq = termfreq, n = n)) %>>% 
+  po("learner", learner = lrn("classif.xgboost", nrounds = 100, predict_type = "prob")) %>%
+  as_learner()
+
+
+# Gradient Boosting
+
+gr_gbm <- po("textvectorizer", param_vals = list(remove_punct = TRUE, remove_numbers = TRUE, min_termfreq = termfreq, n = n)) %>>% 
+  po("learner", learner = lrn("classif.gbm", n.trees = 100, predict_type = "prob")) %>%
+  as_learner()
+
+bench_func5 <- function(ratio = 0.7){
+design <- benchmark_grid(
+  tasks = as_task_classif(presidente ~., data = discursos2),
+  learners = list(stack, gr_xgboost, gr_gbm),
+  resamplings = rsmp("holdout", ratio = ratio)
+  )
+
+#acessar resultados
+resultados <- benchmark(design)
+resultados$score(msrs(c("classif.acc", "classif.bacc", "classif.ce", "classif.mbrier")))
+}
+
+
+boosting <- bench_func5() %>% select(nr, classif.acc, classif.bacc, classif.ce, classif.mbrier)
+
+```
+
+```{r}
+boosting %>% mutate(Modelo = case_when(nr == 1 ~ "stacking",
+                                       nr == 2 ~ "xgboost",
+                                       nr == 3 ~ "gbm"),
+                     "Accuracy" = classif.acc,
+                     "Bal. Acc." = classif.bacc,
+                     "Brier Score" = classif.mbrier,
+                     "Class. Error" = classif.ce) %>%
+  select(c("Modelo", "Accuracy", "Bal. Acc.", "Brier Score", "Class. Error")) %>%
+  kbl(caption = " Tabela 6 - Perfomance do stacking contra o boosting") %>% kable_classic_2(full_width = F)
+```
+
+Parece que o Extreme boosting obteve resultados levemente superiores ao stacking. Agora, testaremos isso novamente em uma simulação:
+
+```{r}
+simulação5 <- 1:10 %>% 
+  map_df(~ bench_func5(ratio = 0.7))
+```
+
+```{r}
+simulação5 %>% mutate(Pipeline = case_when(nr == 1 ~ "stacking",
+                                        nr == 2 ~ "xgboost",
+                                        nr == 3 ~ "gbm"),
+                     "Accuracy" = classif.acc,
+                     "Bal. Acc." = classif.bacc,
+                     "Brier Score" = classif.mbrier,
+                     "Class. Error" = classif.ce) %>%
+  select(c("Accuracy", "Bal. Acc.", "Brier Score", "Class. Error", "Pipeline"))  %>% 
+  melt(., id = ) %>% 
+  ggplot(aes(fill=Pipeline, y = value, x = variable))+
+  geom_boxplot()+
+  theme_minimal()+
+  labs(title = "Figura 8 - Performance do stacking contra o boosting",
+       y = "Valor",
+       x = "Métricas")
+```
+
+O stacking parece ter sido o modelo com melhores resultados. Portanto, ele será o utilizado para o treinamento e validação.
+
+Como forma de melhorar a validação, iremos alterar o ratio do holdout para verificar a perfomance do modelo de stacking em diferentes tamanhos de bancos de treino.
+
+```{r}
+
+ratio0.8 <- 1:(10) %>% 
+  map_df(~ bench_func4(ratio = 0.8))
+
+```
+
+```{r}
+
+ratio0.9 <- 1:10 %>% 
+  map_df(~ bench_func4(ratio = 0.9))
+```
+
+```{r}
+
+ratios <- tibble()
+
+res2 <-  simulação4  %>% mutate(ratio = 0.7)
+res3 <-  ratio0.8 %>%  mutate(ratio = 0.8)
+res4 <-  ratio0.9 %>%  mutate(ratio = 0.9)
+
+ratios <- bind_rows(res2, res3, res4)
+
+
+ratios %>% mutate("Accuracy" = classif.acc,
+                  "Bal. Acc." = classif.bacc,
+                  "Brier Score" = classif.mbrier,
+                  "Class. Error" = classif.ce) %>%
+  select(c("ratio", "Accuracy", "Bal. Acc.", "Brier Score", "Class. Error"))  %>% 
+  mutate(ratio = as.factor(ratio)) %>% 
+  melt(., id = "ratio") %>% 
+  ggplot(aes(fill=ratio, y = value, x = variable))+
+  geom_boxplot()+
+  theme_minimal()+
+  labs(title = "Figura 9 - Performance do Forest por ratio",
+       y = "Valor",
+       x = "Métricas",
+    caption = "Note: the lower the Brier score is for a set of predictions, the better the predictions are calibrated.")
+
+
+
+```
+
+# Validação
+
+O modelo stack com o ratio de 0.7 parece ser nosso melhor modelo. Avaliaremos seus resultados no banco de validação:
+
+```{r}
+tsk <- as_task_classif(presidente ~., data = discursos2)
+modelo <- stack$train(tsk)
+
+pred <- modelo$predict_newdata(validacao)
+validacao$pred <- pred$response
+
+
+validacao <- validacao %>% mutate(presidente = case_when(pred == 1 ~ "Lula", 
+                                               pred == 2 ~ "Dilma",
+                                               pred == 3 ~ "Temer"))
+
+
+print(validacao)
+```
+
+```{r}
+validacao %>% 
+  select(-discurso) %>% 
+  kbl(caption = "Tabela 6 - Predições do modelo stack (random forest)") %>% kable_classic_2(full_width = F)
+```
+
