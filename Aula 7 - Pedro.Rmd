@@ -1,0 +1,411 @@
+---
+title: "Aula 7"
+author: "Pedro Schmalz 10389052"
+date: "2022-10-26"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r, echo=FALSE}
+knitr::opts_chunk$set(echo=F, error=FALSE, warning=FALSE, message=FALSE)
+```
+
+```{r}
+#Pacotes utilizados
+
+if (!require("pacman")) install.packages("pacman"); # O Pacote "pacman" permite carregar os pacotes com menos código
+
+# Carregando os pacotes
+
+pacman::p_load("tidyverse",  "dplyr", "datasets", "ggplot2", "readxl", "haven", "knitr", "reshape2", "broom", "modelr", "stargazer", "jtools", "purrr", "mlr3", "mlr3measures", "mlr3viz", "mlr3learners", "mlr3extralearners", "mlr3tuning", "GGally", "kknn", "glmnet", "quanteda", "janitor", "ranger", "mlr3verse", "igraph", "earth", "randomForest", "xgboost", "gbm")
+
+devtools::install_github("mlr-org/mlr3extralearners", force = TRUE)
+library(mlr3extralearners)
+```
+
+# Exercícios 7
+
+# 1 - Bagging
+
+Para esse exercício, precisaremos de novos dados, dessa vez das eleições municípais de 2000. A base que usaremos indica qual partido venceu, se PMDB/PSDB/PFL ou outros, e variáveis econômicas e demográficas (não se esqueça de remover IDs e nome dos municípios, como cod_mun_ibge e nome_municipio; se usar Python, também não se esqueça de transformar/remover as variáveis uf e coligacao):
+
+```{r}
+link <- "https://raw.githubusercontent.com/FLS-6497/datasets/main/aula7/eleicoes2000.csv"
+dados <- readr::read_csv2(link) %>%
+  select(-cod_mun_ibge, -nome_municipio) %>%
+  mutate_if(is.character, as.factor)
+```
+
+### a) Exploração
+
+Explore rapidamente a base de dados. Para tanto, você pode criar gráficos com as distribuições do target e de algumas features, com cruzamentos das variáveis ou, ainda, usar correlações. Quais variáveis parecem ter mais relação com o target partido?
+
+```{r}
+
+dados2 <- dados %>% select(c("partido", "n_partidos", "espvida", "mort1", "e_anosestudo", "t_analf25m")) 
+
+tsk = as_task_classif(dados2, target = "partido")
+
+autoplot(tsk, type = "pairs")
+
+```
+
+```{r}
+dados2 <- dados %>% select(c("partido", "ppob", rdpc, agua_esgoto, i_escolaridade, p_super, t_des18m, gini))
+
+tsk = as_task_classif(dados2, target = "partido")
+
+autoplot(tsk, type = "pairs")
+```
+
+### b) Criação de pipelines com bagging
+
+Usando pipelines, crie um bagging ensemble combinando quantos e quais modelos você quiser e outra pipeline usando Naive Bayes. Treine e compare os resultados destas pipelines.
+
+```{r}
+
+tsk <- as_task_classif(partido ~ ., data = dados)
+
+# Pipeline de Naive Bayes
+
+gr <- po("scale") %>>%
+  po("learner", learner = lrn("classif.naive_bayes")) %>%
+  as_learner()
+
+
+# tree
+
+gr_bagtree <- po("scale") %>>% po("subsample", frac = 1, replace = TRUE) %>>%
+  po("learner", learner = lrn("classif.rpart")) %>%
+  ppl("greplicate", ., 10) %>>%
+  po("classifavg", innum = 10) %>%
+  as_learner()
+
+
+
+# Treina as pipelines
+
+design <- benchmark_grid(
+  tasks = tsk,
+  learners = list(gr, gr_bagtree),
+  resamplings = rsmp('holdout', ratio = 0.7)
+)
+
+
+resultados <- benchmark(design)
+
+
+resultados$score(msr("classif.fbeta")) %>% select(nr, classif.fbeta) %>% 
+  mutate(modelo = case_when(nr == 1 ~ "naive",
+                            nr == 2 ~ "tree")) 
+
+
+
+```
+
+### c) Variações
+
+Agora, crie outros dois bagging ensembles, um deles fazendo subsample dos dados (no mlr3, isso é controlado pelo argumento frac no po com subsample) e, o outro, utilizando um modelo diferente do que você utilizou na bagg anterior. Treine e compare os resultados destas novas pipelines.
+
+```{r}
+
+grbagtree_subsample <- po("scale") %>>% 
+  po("subsample", frac = 0.7, replace = FALSE) %>>%
+  po("learner", learner = lrn("classif.rpart")) %>%
+  ppl("greplicate", ., 10) %>>%
+  po("classifavg", innum = 10) %>%
+  as_learner()
+
+gr_bagknn <- po("subsample", frac = 1, replace = TRUE) %>>%
+  po("learner", learner = lrn("classif.kknn")) %>%
+  ppl("greplicate", ., 10) %>>%
+  po("classifavg", innum = 10) %>%
+  as_learner()
+
+grknn_subsample <- po("subsample", frac = 0.7, replace = FALSE) %>>%
+  po("learner", learner = lrn("classif.kknn")) %>% 
+  ppl("greplicate", ., 10) %>>%
+  po("classifavg", innum = 10) %>% 
+  as_learner()
+
+
+design <- benchmark_grid(
+  tasks = tsk,
+  learners = list(gr, gr_bagtree, grbagtree_subsample, gr_bagknn, grknn_subsample),
+  resamplings = rsmp('holdout', ratio = 0.7)
+)
+
+
+resultados <- benchmark(design)
+resultados$score(msr("classif.fbeta")) %>% select(nr, classif.fbeta) %>% 
+  mutate(modelo = case_when(nr == 1 ~ "naive",
+                            nr == 2 ~ "tree",
+                            nr == 3 ~ 'tree_subsample',
+                            nr == 4 ~ 'knn',
+                            nr == 5 ~ 'knn_subsample'))
+
+
+
+```
+
+### d) Random Forest
+
+Crie uma pipeline agora usando random forest (fique à vontade para customizar ela como achar melhor) e compare seus resultados com o da melhor pipeline que você encontrou no exercício anterior.
+
+```{r}
+rf <- po("learner", learner = lrn("classif.randomForest", ntree=500)) %>% 
+  as_learner()
+
+design <- benchmark_grid(
+  tasks = tsk,
+  learners = list(grknn_subsample, rf),
+  resamplings = rsmp('holdout', ratio = 0.7)
+)
+
+
+resultados <- benchmark(design)
+
+resultados$score(msr("classif.fbeta")) %>% select(nr, classif.fbeta) %>% 
+  mutate(modelo = case_when(nr == 1 ~ "KNN (Subsample)",
+                            nr == 2 ~ "RandomForest"))
+
+
+```
+
+# 2 - Stacking
+
+### a) Básico
+
+Adaptando o exemplo dos materiais de aula, crie uma *pipeline* que use *stacking* para combinar os resultados de três modelos diferentes. Os modelos de nível 0 podem ter tanto etapas de pré-processamento, modelos ou parâmetros diferentes (e.g., é possível treinar 3 árvores diferentes). Como *blender*, use um modelo de regressão logística simples (no `mlr3`, `classif.log_reg`; no `sklearn`, `LogisticRegression`). Treine e veja os resultados desta *pipeline*.
+
+```{r}
+
+gr <- po("scale") %>>%
+  po("learner", learner = lrn("classif.naive_bayes")) %>%
+  po("learner_cv", .) 
+
+gr_kknn <- po("scale") %>>%
+  po("learner", learner = lrn("classif.kknn")) %>%
+  po("learner_cv", .) 
+
+gr_rf <- po("learner", learner = lrn("classif.randomForest", ntree = 50)) %>%
+  po("learner_cv", .) 
+
+# Cria o ensemble
+stack <- list(gr, gr_kknn, gr_rf) %>%
+  gunion() %>>% # Une os modelos
+  po("featureunion") %>>% # Une as predicoes
+  po("learner", learner = lrn("classif.log_reg")) %>% # Faz predicoes finais
+  as_learner()
+  
+design <- benchmark_grid(
+  tasks = tsk,
+  learners = list(stack),
+  resamplings = rsmp("holdout", ratio = 0.7)
+)
+
+resultados <- benchmark(design)
+resultados$score(msr("classif.fbeta")) %>% select(nr, classif.fbeta)
+
+```
+
+### b) Ensemble em cima de ensemble
+
+Ao stack anterior, adapte e adicione agora o melhor bagging ensemble que você encontrou no exercício 1. Treine e veja o resultado dessa nova versão.
+
+```{r}
+
+grknn_subsample <- po("subsample", frac = 0.7, replace = FALSE) %>>%
+  po("learner", learner = lrn("classif.kknn")) %>% 
+  ppl("greplicate", ., 10) %>>%
+  po("classifavg", innum = 10) %>% 
+  po("learner_cv", .)
+
+
+gr_rf <- po("learner", learner = lrn("classif.randomForest", ntree = 100)) %>%
+  po("learner_cv", .) 
+
+gr <- po("scale") %>>% po("subsample", frac=0.7, replace = FALSE) %>>% 
+  po("learner", learner = lrn("classif.naive_bayes")) %>%
+  ppl("greplicate", ., 10) %>>%
+  po("classifavg", innum=10) %>% 
+  po("learner_cv", .) 
+
+
+# Cria o ensemble
+stack <- list(gr, grknn_subsample, gr_rf) %>%
+  gunion() %>>% # Une os modelos
+  po("featureunion") %>>% # Une as predicoes
+  po("learner", learner = lrn("classif.log_reg")) %>% # Faz predicoes finais
+  as_learner()
+  
+design <- benchmark_grid(
+  tasks = tsk,
+  learners = list(stack),
+  resamplings = rsmp("holdout", ratio = 0.9)
+)
+
+resultados <- benchmark(design)
+resultados$score(msr("classif.fbeta")) %>% select(nr, classif.fbeta)
+
+
+```
+
+# 3 - Boosting
+
+Para quem usa R, neste exercício será necessário converter features categóricas para numeric (o XGboost só aceita variáveis numéricas). Podemos criar uma nova base assim com o seguinte código:
+
+```{r}
+dados2 <- as.data.frame(model.matrix(partido ~ ., dados)) %>%
+  janitor::clean_names()
+dados2$partido <- dados$partido
+
+tsk2 <- as_task_classif(partido ~ ., data = dados2)
+```
+
+
+
+### a) Gradiente
+
+Treine dois ensembles com boosting, um usando gradient boosting. O outro, extreme gradiente boosting. Compare os resultados
+
+```{r}
+gr_xgboost <- po("learner", learner = lrn("classif.xgboost", nrounds = 100)) %>%
+  as_learner()
+
+gr_gbm <- po("learner", learner = lrn("classif.gbm", n.trees = 100)) %>%
+  as_learner()
+
+design <- benchmark_grid(
+  tasks = tsk2,
+  learners = list(gr_xgboost, gr_gbm),
+  resamplings = rsmp("holdout", ratio = 0.7)
+)
+
+resultados <- benchmark(design)
+resultados$score(msr("classif.fbeta"))
+
+```
+### b) Número de árvores em boosting
+
+Usando extreme boosting, crie três pipelines: uma que treine 10 modelos, outra que treine 100 e, por fim, uma que treine 200. O que acontece com os resultados?
+
+```{r}
+gr_xgboost <- po("learner", learner = lrn("classif.xgboost", nrounds = 10)) %>%
+  as_learner()
+
+gr_xgboost2 <- po("learner", learner = lrn("classif.xgboost", nrounds = 100)) %>%
+  as_learner()
+
+gr_xgboost3 <- po("learner", learner = lrn("classif.xgboost", nrounds = 200)) %>%
+  as_learner()
+
+design <- benchmark_grid(
+  tasks = tsk2,
+  learners = list(gr_xgboost, gr_xgboost2, gr_xgboost3),
+  resamplings = rsmp("holdout", ratio = 0.7)
+)
+
+resultados <- benchmark(design)
+resultados$score(msr("classif.fbeta"))
+
+```
+
+
+```{r}
+bench_func <- function(){
+design <- benchmark_grid(
+  tasks = tsk2,
+  learners = list(gr_xgboost, gr_xgboost2, gr_xgboost3),
+  resamplings = rsmp("holdout", ratio = 0.7)
+  )
+
+#acessar resultados
+resultados <- benchmark(design)
+resultados$score(msr("classif.fbeta"))
+}
+```
+
+```{r}
+simulação <- 1:10 %>%
+  map_df(~ bench_func())
+```
+
+
+```{r}
+simulação %>% mutate(modelo = case_when(nr == 1 ~ "n = 10",
+                                        nr == 2 ~ "n = 100",
+                                        nr == 3 ~ "n = 200")) %>% 
+  ggplot(aes(fill=modelo, y = classif.fbeta, x = modelo))+
+  geom_boxplot() +
+  theme_minimal()
+
+```
+
+
+# 4 - Validação
+
+Usando o melhor ensemble que você encontrou nessa aula, o valide usando estes dados das eleições de 2004 – que foram um pouco diferentes das de 2000 em termos de desempenho dos partidos (lembre-se de que é preciso treinar do zero o melhor modelo nos dados completos de 2000 antes de fazer a validação).
+
+```{r}
+library(tidyverse)
+
+link <- "https://raw.githubusercontent.com/FLS-6497/datasets/main/aula7/eleicoes2004.csv"
+valid <- readr::read_csv2(link) %>%
+  select(-cod_mun_ibge, -nome_municipio) %>%
+  mutate_if(is.character, as.factor)
+```
+
+```{r}
+# Alterando o banco de validação
+
+levels(valid$coligacao) <- c("Coligado", "Não-coligado")
+
+valid2 <- as.data.frame(model.matrix(partido ~ ., valid)) %>%
+  janitor::clean_names()
+valid2$partido <- valid$partido
+```
+
+```{r}
+
+gr_xgboost3 <- po("learner", learner = lrn("classif.xgboost", nrounds = 200, predict_type = "prob")) %>%
+  as_learner()
+
+modelo <- gr_xgboost3$train(tsk2)
+
+pred <- modelo$predict_newdata(valid2)
+valid2$pred <- pred$response
+```
+
+
+```{r}
+pred$confusion
+```
+
+```{r}
+autoplot(pred)
+```
+
+
+```{r}
+autoplot(pred, type = 'roc')
+```
+
+```{r}
+autoplot(pred, type = 'prc')
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
