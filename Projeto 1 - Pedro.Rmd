@@ -429,5 +429,10 @@ validacao <- validacao %>% mutate(presidente = case_when(pred == 1 ~ "Lula",
                                                pred == 3 ~ "Temer"))
 
 
-print(validacao)
+
+validacao 
+```
+
+```{r}
+validacao %>% select(-discurso) %>% kbl(caption = "Tabela 3 - Predições do modelo grforest") %>% kable_classic_2(full_width = F)
 ```
