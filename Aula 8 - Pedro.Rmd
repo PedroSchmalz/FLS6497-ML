@@ -1,0 +1,444 @@
+---
+title: "Aula 8"
+author: "Pedro Schmalz 10389052"
+date: "2022-11-16"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r, echo=FALSE}
+knitr::opts_chunk$set(echo=F, error=FALSE, warning=FALSE, message=FALSE)
+```
+
+```{r}
+#Pacotes utilizados
+
+if (!require("pacman")) install.packages("pacman"); # O Pacote "pacman" permite carregar os pacotes com menos código
+
+# Carregando os pacotes
+
+pacman::p_load("tidyverse",  "dplyr", "datasets", "ggplot2", "readxl", "haven", "knitr", "reshape2", "broom", "modelr", "stargazer", "jtools", "purrr", "mlr3", "mlr3measures", "mlr3viz", "mlr3learners", "mlr3extralearners", "mlr3tuning", "GGally", "kknn", "glmnet", "quanteda", "janitor", "ranger", "mlr3verse", "igraph", "earth", "randomForest", "xgboost", "gbm", 'kernlab', 'mlr3cluster', 'factoextra', 'dbscan')
+
+#devtools::install_github("mlr-org/mlr3extralearners", force = TRUE)
+library(mlr3extralearners)
+```
+
+# Exercícios 8
+
+# 1 - PCA
+
+Para esse exercício, usaremos novamente dados das eleições municipais de 2000:
+
+```{r}
+link <- "https://raw.githubusercontent.com/FLS-6497/datasets/main/aula7/eleicoes2000.csv"
+dados <- readr::read_csv2(link) %>%
+  select(-cod_mun_ibge, -nome_municipio) %>%
+  mutate_if(is.character, as.factor)
+```
+
+### a) Criando uma pipeline
+
+Com os dados, implemente uma pipeline de classificação que use PCA para reduzir o número de features nos dados. Seu objetivo será predizer qual partido governa dado município. Calcule alguma métrica de validação.
+
+```{r}
+
+dados2 <- dados %>% mutate(partido = ifelse(partido == "Outros", 0, 1)) %>% 
+  select(-uf, - coligacao)
+                       
+
+# Define a task 
+tsk <- as_task_regr(partido ~ ., data = dados2)
+
+# Exibe os dados originais
+tsk$data()
+
+# Cria uma pipeline com PCA
+gr <- po("scale") %>>%
+  po("pca") %>>% 
+  po("learner", learner = lrn("regr.svm")) %>%
+  as_learner()
+
+
+# Treina a pipeline
+design <- benchmark_grid(
+  tasks = tsk,
+  learners = list(gr),
+  resamplings = rsmp("holdout", ratio = 0.7)
+)
+
+resultados <- benchmark(design)
+resultados$score(msr("regr.rmse"))
+
+```
+
+### b) Testando diferentes pipelines
+
+Partindo da pipeline anterior, crie diferentes pipelines alterando o número de dimensões no PCA para 2, 3, 4 e 5. Rode essas pipelines e compare seus resultados.
+```{r}
+
+dados2 <- dados %>% mutate(partido = ifelse(partido == "Outros", 0, 1)) %>% 
+  select(-uf, - coligacao)
+                       
+
+# Define a task 
+tsk <- as_task_regr(partido ~ ., data = dados2)
+
+# Exibe os dados originais
+tsk$data()
+
+# Cria uma pipeline com PCA
+gr2 <- po("scale") %>>%
+  po("pca", rank. = 2) %>>% 
+  po("learner", learner = lrn("regr.svm")) %>%
+  as_learner()
+
+gr3 <- po("scale") %>>%
+  po("pca", rank. = 3) %>>% 
+  po("learner", learner = lrn("regr.svm")) %>%
+  as_learner()
+
+gr4 <- po("scale") %>>%
+  po("pca", rank. = 4) %>>% 
+  po("learner", learner = lrn("regr.svm")) %>%
+  as_learner()
+
+gr5 <- po("scale") %>>%
+  po("pca", rank. = 5) %>>% 
+  po("learner", learner = lrn("regr.svm")) %>%
+  as_learner()
+
+gr6 <- po("scale") %>>%
+  po("pca", rank. = 6) %>>% 
+  po("learner", learner = lrn("regr.svm")) %>%
+  as_learner()
+
+
+# Treina a pipeline
+design <- benchmark_grid(
+  tasks = tsk,
+  learners = list(gr2, gr3, gr4, gr5, gr6),
+  resamplings = rsmp("holdout", ratio = 0.7)
+)
+
+resultados <- benchmark(design)
+resultados$score(msr("regr.rmse")) %>% select(nr, 'regr.rmse')
+
+```
+
+### c) Alternativas
+
+Checando a documentação do seu framework, implemente alguma alternativa ao PCA (exemplo: kernel PCA).
+
+```{r}
+
+# Define a task 
+tsk <- as_task_regr(partido ~ ., data = dados2)
+
+# Exibe os dados originais
+tsk$data()
+
+# Cria uma pipeline com PCA
+gr <- po("scale") %>>%
+  po("kernelpca") %>>% 
+  po("learner", learner = lrn("regr.svm")) %>%
+  as_learner()
+
+
+# Treina a pipeline
+design <- benchmark_grid(
+  tasks = tsk,
+  learners = list(gr),
+  resamplings = rsmp("holdout", ratio = 0.7)
+)
+
+resultados <- benchmark(design)
+resultados$score(msr("regr.rmse"))
+```
+```{r}
+# Cria uma pipeline com kernel PCA
+gr2 <- po("scale") %>>%
+  po("kernelpca", features = 2) %>>% 
+  po("learner", learner = lrn("regr.svm")) %>%
+  as_learner()
+
+gr3 <- po("scale") %>>%
+  po("kernelpca", features = 3) %>>% 
+  po("learner", learner = lrn("regr.svm")) %>%
+  as_learner()
+
+gr4 <- po("scale") %>>%
+  po("kernelpca", features = 4) %>>% 
+  po("learner", learner = lrn("regr.svm")) %>%
+  as_learner()
+
+gr5 <- po("scale") %>>%
+  po("kernelpca", features = 5) %>>% 
+  po("learner", learner = lrn("regr.svm")) %>%
+  as_learner()
+
+
+# Treina a pipeline
+design <- benchmark_grid(
+  tasks = tsk,
+  learners = list(gr2, gr3, gr4, gr5, gr6),
+  resamplings = rsmp("holdout", ratio = 0.7)
+)
+
+resultados <- benchmark(design)
+resultados$score(msr("regr.rmse")) %>% select(nr, 'regr.rmse')
+```
+
+# 2) Clustering
+
+Para esse exercício, usaremos uma nova base de dados com gastos reportados dos gabinetes de deputados e deputadas federais até agora, em 2022, separados por tipo de gasto:
+
+```{r}
+
+link3 <- "https://raw.githubusercontent.com/FLS-6497/datasets/main/aula8/gabinetes22.csv"
+dados3 <- readr::read_csv2(link3)
+
+dados4 <- dados3 %>%
+  select_if(is.numeric)
+
+```
+
+### a) K-means
+
+Use K-means para separar os e as parlamentares em 4 grupos. Adicione essa classificação na base de dados original e a explore para tentar compreender quais são esses grupos.
+
+```{r}
+# Define a task
+tsk <- as_task_clust(dados4)
+
+# Cluster K-means
+clust <- lrn("clust.kmeans", centers = 4)
+
+cluster <- po('scale') %>>% 
+  po('learner', learner = lrn('clust.kmeans'), centers = 4) %>% 
+  as_learner()
+
+clust$train(tsk)
+dados3$cluster <- clust$assignments
+dados3 <- dados3 %>% mutate(clusterfac = as.factor(cluster))
+dados4$cluster <- dados3$cluster
+dados4 <- dados4 %>% mutate(cluster = as.factor(cluster))
+```
+
+
+
+```{r}
+
+dados4crop <- dados4 %>% select(cluster, c(1:2))
+tsk = as_task_classif(dados4crop, target = "cluster")
+
+autoplot(tsk, type = "duo")
+
+
+```
+```{r}
+dados4crop <- dados4 %>% select(cluster, c(3:4))
+tsk = as_task_classif(dados4crop, target = "cluster")
+
+autoplot(tsk, type = "duo")
+
+```
+
+```{r}
+dados4crop <- dados4 %>% select(cluster, c(5:6))
+tsk = as_task_classif(dados4crop, target = "cluster")
+
+autoplot(tsk, type = "duo")
+```
+
+
+```{r}
+dados4crop <- dados4 %>% select(cluster, c(7:8))
+tsk = as_task_classif(dados4crop, target = "cluster")
+
+autoplot(tsk, type = "duo")
+```
+
+```{r}
+dados4crop <- dados4 %>% select(cluster, c(9:10))
+tsk = as_task_classif(dados4crop, target = "cluster")
+
+autoplot(tsk, type = "duo")
+```
+
+```{r}
+dados4crop <- dados4 %>% select(cluster, c(11:12))
+tsk = as_task_classif(dados4crop, target = "cluster")
+
+autoplot(tsk, type = "duo")
+```
+
+```{r}
+dados4crop <- dados4 %>% select(cluster, c(13:14))
+tsk = as_task_classif(dados4crop, target = "cluster")
+
+autoplot(tsk, type = "duo")
+```
+
+```{r}
+dados4crop <- dados4 %>% select(cluster, c(15:16))
+tsk = as_task_classif(dados4crop, target = "cluster")
+
+autoplot(tsk, type = "duo")
+```
+
+```{r}
+dados4crop <- dados4 %>% select(cluster, c(17:18))
+tsk = as_task_classif(dados4crop, target = "cluster")
+
+autoplot(tsk, type = "duo")
+```
+
+```{r}
+dados4crop <- dados4 %>% select(cluster, c(19:20))
+tsk = as_task_classif(dados4crop, target = "cluster")
+
+autoplot(tsk, type = "duo")
+```
+
+### b) Alternativas
+
+Use outro algoritmo de clustering e faça uma nova classificação dos e das parlamentares. Compare com a anterior para examinar as diferenças.
+
+```{r}
+
+dados4 <- dados4 %>% select(-cluster)
+
+# Define a task
+tsk <- as_task_clust(dados4)
+
+# Cluster hierarquico
+clust <- lrn("clust.hclust")
+
+clust$train(tsk)
+dados3$cluster <- clust$assignments
+
+cluster <- po('scale') %>>% 
+  po('learner', learner = lrn('clust.kmeans'), centers = 4) %>% 
+  as_learner()
+
+clust$train(tsk)
+dados3$cluster <- clust$assignments
+dados3 <- dados3 %>% mutate(clusterfac = as.factor(cluster))
+dados4$cluster <- dados3$cluster
+dados4 <- dados4 %>% mutate(cluster = as.factor(cluster))
+```
+
+
+```{r}
+
+dados4crop <- dados4 %>% select(cluster, c(1:2))
+tsk = as_task_classif(dados4crop, target = "cluster")
+
+autoplot(tsk, type = "duo")
+
+
+```
+
+
+```{r}
+dados4crop <- dados4 %>% select(cluster, c(3:4))
+tsk = as_task_classif(dados4crop, target = "cluster")
+
+autoplot(tsk, type = "duo")
+
+```
+
+```{r}
+dados4crop <- dados4 %>% select(cluster, c(5:6))
+tsk = as_task_classif(dados4crop, target = "cluster")
+
+autoplot(tsk, type = "duo")
+```
+
+
+```{r}
+dados4crop <- dados4 %>% select(cluster, c(7:8))
+tsk = as_task_classif(dados4crop, target = "cluster")
+
+autoplot(tsk, type = "duo")
+```
+
+```{r}
+dados4crop <- dados4 %>% select(cluster, c(9:10))
+tsk = as_task_classif(dados4crop, target = "cluster")
+
+autoplot(tsk, type = "duo")
+```
+
+```{r}
+dados4crop <- dados4 %>% select(cluster, c(11:12))
+tsk = as_task_classif(dados4crop, target = "cluster")
+
+autoplot(tsk, type = "duo")
+```
+
+```{r}
+dados4crop <- dados4 %>% select(cluster, c(13:14))
+tsk = as_task_classif(dados4crop, target = "cluster")
+
+autoplot(tsk, type = "duo")
+```
+
+```{r}
+dados4crop <- dados4 %>% select(cluster, c(15:16))
+tsk = as_task_classif(dados4crop, target = "cluster")
+
+autoplot(tsk, type = "duo")
+```
+
+```{r}
+dados4crop <- dados4 %>% select(cluster, c(17:18))
+tsk = as_task_classif(dados4crop, target = "cluster")
+
+autoplot(tsk, type = "duo")
+```
+
+```{r}
+dados4crop <- dados4 %>% select(cluster, c(19:20))
+tsk = as_task_classif(dados4crop, target = "cluster")
+
+autoplot(tsk, type = "duo")
+```
+```{r}
+
+dados4 <- dados4 %>% select(-cluster)
+
+# Define a task
+tsk <- as_task_clust(dados4)
+
+# Cluster hierarquico
+clust <- lrn("clust.dbscan", eps = 4)
+
+clust$train(tsk)
+dados3$cluster <- clust$assignments
+
+cluster <- po('scale') %>>% 
+  po('learner', learner = lrn('clust.kmeans'), centers = 4) %>% 
+  as_learner()
+
+clust$train(tsk)
+dados3$cluster <- clust$assignments
+dados3 <- dados3 %>% mutate(clusterfac = as.factor(cluster))
+dados4$cluster <- dados3$cluster
+dados4 <- dados4 %>% mutate(cluster = as.factor(cluster))
+```
+
+
+```{r}
+
+dados4 %>% group_by(cluster) %>% tally()
+
+
+```
+
+
+
+
+
+
