@@ -1,0 +1,408 @@
+---
+title: "Aula 10"
+author: "Pedro Schmalz 10389052"
+date: "2022-11-30"
+output: html_document
+---
+
+-> Cada pixel é referenciado em uma tabela (posição horizontal, posição vertical, rgb(cor))
+   Cada imagem é composta por várias 'tabelas' com informações por pixel 
+   
+-> Exercícios: replicação paper ruim (validação tem problema); banco de palavras usando tuning para otimizar; temperatura em São Bernardo (sim, de novo)
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+#Pacotes utilizados
+
+if (!require("pacman")) install.packages("pacman"); # O Pacote "pacman" permite carregar os pacotes com menos código
+
+# Carregando os pacotes
+
+pacman::p_load("tidyverse",  "dplyr", "datasets", "ggplot2", "readxl", "haven", "knitr", "reshape2", "broom", "modelr", "stargazer", "jtools", "purrr", "mlr3", "mlr3measures", "mlr3viz", "mlr3learners", "mlr3extralearners", "mlr3tuning", "GGally", "kknn", "glmnet", "quanteda", "janitor", "ranger", "mlr3verse", "igraph", "earth", "randomForest", "xgboost", "gbm", 'kernlab', 'mlr3cluster', 'factoextra', 'dbscan', 'vars', 'mlr3mbo', 'DiceKriging', 'smotefamily')
+
+remotes::install_github("mlr-org/mlr3forecasting") #pacote em desenvolvimento
+
+#devtools::install_github("mlr-org/mlr3extralearners", force = TRUE)
+library(mlr3extralearners)
+
+future::plan("multisession", workers = 4) #define o nr de núcleos
+```
+
+## Aula 
+
+Exemplo Gridsearch
+
+```{r cars}
+library(mlr3verse)
+library(mlr3tuning)
+library(tidyverse)
+
+link <- "https://raw.githubusercontent.com/FLS-6497/datasets/main/aula7/eleicoes2000.csv"
+dados <- readr::read_csv2(link) %>%
+  #select(-cod_mun_ibge, -nome_municipio) %>%
+  mutate_if(is.character, as.factor)
+
+# Define a task
+tsk <- as_task_classif(partido ~ ., data = dados, positive = "PMDB-PSDB-PFL")
+
+# Cria uma pipeline (e indica parametros para tuning)
+gr <- po("encode") %>>% #transforma variáveis em dummies
+  po("learner", learner = lrn("classif.randomForest"),
+         #definição de hiperparâmetros usando a função to_tune
+         ntree = to_tune(c(20, 50, 100)), #quantas árvores ruins vai testar
+         mtry = to_tune(c(3, 7, 11))) %>% # mtry: nr de variáveis levadas em consideração 
+  as_learner()
+
+#Não utiliza mais o benchmark
+
+# Criamos uma instancia (parecido com um design grid)
+#desenho do workflow (tsk, pipeline, estratégia de sampling, métrica avaliada)
+instance <- ti(
+  task = tsk,
+  learner = gr,
+  resampling = rsmp("cv", folds = 5),
+  measures = msr("classif.fbeta"),
+  terminator = trm("none")
+)
+
+# Tuning
+tuner <- tnr("grid_search")
+tuner$optimize(instance)
+
+# Os resultados ficam salvos em um tibble
+as.data.table(instance$archive) %>%
+  as_tibble()
+
+# Retreina a melhor pipeline na base completa
+gr$param_set$values <- instance$result_learner_param_vals
+gr$train(tsk)
+```
+
+## Aula
+
+Random Gridsearch
+
+(No documento do mlr3 tem todos os hiperparametros que podem ser testados para randomforest)
+
+```{r pressure, echo=FALSE}
+# Cria uma pipeline com um espaço de hiper-parametros maior
+gr <- po("learner", learner = lrn("classif.randomForest"),
+         ntree = to_tune(lower = 10, upper = 300),
+         mtry = to_tune(lower = 3, upper = 11)) %>%
+  as_learner()
+
+
+dados2 <- dados %>% dplyr::select(-nome_municipio)
+
+
+
+tsk <- as_task_classif(partido ~ ., data = dados2, positive = "PMDB-PSDB-PFL")
+
+
+# Criamos uma instancia
+instance <- ti(
+  task = tsk,
+  learner = gr,
+  resampling = rsmp("cv", folds = 5),
+  measures = msr("classif.fbeta"),
+  terminator = trm("evals", n_evals = 10)
+)
+
+# Tuning
+tuner <- tnr("random_search")
+tuner$optimize(instance)
+```
+
+
+##Aula
+
+Otimização bayesiana
+
+estimar o formato da função 
+sugerir valores que fazem mais sentido de serem testados 
+
+```{r}
+# Criamos uma instancia
+instance <- ti(
+  task = tsk,
+  learner = gr,
+  resampling = rsmp("cv", folds = 5),
+  measures = msr("classif.fbeta"),
+  terminator = trm("evals", n_evals = 10)
+)
+
+# Tuning
+tuner <- tnr("mbo")
+tuner$optimize(instance)
+```
+
+## Exercícios
+
+1) Tuning
+Neste exercício usaremos uma base de dados com decisões da Suprema Corte americana que contém informações sobre os casos julgados e posições dos juízes em suas arguições, entre outros (Kaufman, Kraft, e Sen 2019). No paper1, o resultado de acurácia encontrado é de 74% com um AdaBoost. Seu desafio é tentar replicar, e potencialmente superar, esse resultado – ou, melhor, ver se é possível replicar e superar o mesmo resultado montando uma pipeline do zero. Detalhes importantes:
+
+```{r}
+link <- "https://github.com/FLS-6497/datasets/raw/main/aula10/supreme.csv"
+dados <- readr::read_csv2(link) %>%
+  mutate_if(is.character, as.factor)%>% 
+  mutate(id =1:n())
+
+validacao <- sample_frac(dados, 0.1)
+
+dados <- dados %>%
+  filter(!id %in% validacao$id)
+
+tsk <- as_task_classif(winner ~ ., data = dados)
+
+# Cria uma pipeline (e indica parametros para tuning)
+gr <- po("learner", learner = lrn("classif.randomForest"),
+         ntree = to_tune(c(20, 50, 100)),
+         mtry = to_tune(c(3, 7, 11))) %>%
+  as_learner()
+
+# Criamos uma instancia
+instance <- ti(
+  task = tsk,
+  learner = gr,
+  resampling = rsmp("cv", folds = 5),
+  measures = msr("classif.fbeta"),
+  terminator = trm("none")
+)
+
+# Tuning
+tuner <- tnr("grid_search")
+tuner$optimize(instance)
+
+# Os resultados ficam salvos em um tibble
+as.data.table(instance$archive) %>%
+  as_tibble()
+
+# Retreina a melhor pipeline na base completa
+gr$param_set$values <- instance$result_learner_param_vals
+gr$train(tsk)
+
+```
+
+```{r}
+
+link <- "https://raw.githubusercontent.com/jacobwright32/Web_Scraper_AI_Core_Project/bb4865ae568e23ab8fadb6ea58cf117df2164ef3/web%20scraping/Cleaned%20Data/Brazil_Sao%20Bernardo%20Do%20Campo_Cleaned.csv"
+
+
+dados <- readr::read_csv(link) %>% 
+  mutate_if(is.character, as.factor) %>% 
+  mutate(id =1:n()) %>% 
+  mutate(lag_max_temp = lag(maximum_temprature)) %>%  #lag antes da base de validação
+  dplyr::select(-c('date', 'country', 'city', 'wind_direction')) %>% 
+  na.omit()
+ 
+validacao <- sample_frac(dados, 0.1)
+
+dados <- dados %>%
+  filter(!id %in% validacao$id) %>% 
+  dplyr::select(-id)
+
+tsk <- as_task_regr(maximum_temprature~ ., data = dados)
+
+
+gr2earth <- po("mutate") %>>% # não tem função automatica dentro do mlr3, preciso criar polinômios 'manualmente'
+  po("scale") %>>% 
+  po("learner", learner = lrn("regr.earth")) %>%
+  as_learner()
+
+gr2earth$param_set$values$mutate.mutation <- list(
+  teste = ~ cloud_coverage^2 + cloud_coverage^3,
+  teste1 = ~ cloud_coverage^3,
+  teste2 = ~ pressure^2 + pressure^3) #nome da variável criada = ~variáveis que vou utilizar
+  teste3 = ~ pressure^3
+  
+
+# Criamos uma instancia
+instance <- ti(
+  task = tsk,
+  learner = gr2earth,
+  resampling = rsmp("cv", folds = 5),
+  measures = msr("regr.mse"),
+  terminator = trm("evals", n_evals = 10)
+)
+
+# Tuning
+tuner <- tnr("grid_search")
+tuner$optimize(instance)
+
+# Os resultados ficam salvos em um tibble
+as.data.table(instance$archive) %>%
+  as_tibble()
+
+# Retreina a melhor pipeline na base completa
+gr$param_set$values <- instance$result_learner_param_vals
+gr$train(tsk)
+
+
+```
+
+
+# Exercício 1 - Tuning
+
+Neste exercício usaremos uma base de dados com decisões da Suprema Corte americana que contém informações sobre os casos julgados e posições dos juízes em suas arguições, entre outros (Kaufman, Kraft, e Sen 2019). No paper1, o resultado de acurácia encontrado é de 74% com um AdaBoost. Seu desafio é tentar replicar, e potencialmente superar, esse resultado – ou, melhor, ver se é possível replicar e superar o mesmo resultado montando uma pipeline do zero. Detalhes importantes:
+
+1 . Nosso target é a variável winner, que indica se uma dada petição foi vitoriosa no plenário
+2 . Teste outras métricas de validação (note que há o dobro de decisões positivas na base)
+3 . Pense na melhor estratégia de validação a usar (o estudo original usa 10-fold cross validation) e justifique sua escolha (em comentários no código)
+4 . Analise as variáveis na base e veja se não é possível pré-processar (ou mesmo remover) algumas que talvez sejam problemáticas
+5 . Teste diferentes pipelines, com diferentes modelos e hiper-parâmetros
+
+
+
+```{r}
+link <- "https://github.com/FLS-6497/datasets/raw/main/aula10/supreme.csv"
+
+dados <- readr::read_csv2(link) %>%
+  mutate_if(is.character, as.factor) %>% 
+mutate_if(is.character, as.factor) %>% 
+mutate_at(c("jurisdiction", "certReason", "issueArea"), as.factor)
+
+tsk <- as_task_classif(winner ~., data = dados)
+
+#Cria uma pipeline
+boost <- lts(lrn("classif.xgboost"))
+
+gr <- po("encode") %>>%
+  po("smote") %>>%  #observações sintéticas a partir dos dados reais, aumento nr de obs e deixo amostra mais balanceada
+  po("learner", learner = lrn("classif.xgboost"),
+     nrounds = to_tune(lower = 50, upper = 100)) %>%
+  as_learner()
+
+set_threads(gr, n = 4)
+
+
+#Criamos uma instância 
+instance <- ti(
+  task = tsk,
+  learner = gr,
+  resampling = rsmp("repeated_cv", 
+                    folds = 5,
+                    repeats =3),
+  measures = msrs(c("classif.fbeta", "classif.precision", "classif.recall")),
+  terminator = trm("evals",  n_evals = 3))
+
+#Tuning
+tuner <- tnr("random_search")
+
+tuner$optimize(instance)
+
+
+# Os resultados ficam salvos em um tibble
+as.data.table(instance$archive) %>%
+  as_tibble()
+```
+
+
+# 2 - Tuning com text as data
+
+Neste exercício revisitaremos os dados do Projeto 1 para aplicar tuning às pipelines que vocês já montaram anteriormente (é possível ir no GitHub consultar seu código). Particularmente, tuning será útil para identificar melhores combinações de hiper-parâmetros de pré-processamento – número ou proporção mínima de ocorrência de palavras, número mínimo de ocorrência de uma palavra entre documentos, tamanho do N em N-grams, etc.
+
+```{r}
+link <- "https://github.com/FLS-6497/datasets/blob/main/projeto1/discursos_pres_internacionais.csv?raw=true"
+discursos <- readr::read_csv2(link)
+  
+#só usar o que já tinhamos e adicionar tuning no preprocessamento
+  
+  # Pipeline 1 - Baseline (n = 1)
+
+termfreq = 20
+n = 1
+  
+  gr <- po("textvectorizer",
+           param_vals = list(remove_punct = TRUE, remove_numbers = to_tune(c(TRUE,FALSE)), #nao remover numeros melhora o mode
+                            min_termfreq = to_tune(0, 0.02),
+                            max_termfreq = to_tune(0.7, 1), #ou valores menores
+                            termfreq_type = "prop",
+                            n = to_tune(1,4)
+                            )) %>>%  # n = to_tune dá problema
+  po("learner", learner = lrn("classif.naive_bayes", predict_type = 'prob')) %>%
+  as_learner()
+  
+
+#Criamos uma instância 
+instance <- ti(
+  task = tsk,
+  learner = gr,
+  resampling = rsmp("repeated_cv", folds = 5),
+  measures = msr("classif.ce"), #modelo precisa retornar probabilidade
+  terminator = trm("evals",  n_evals = 10)
+)
+
+#Tuning
+tuner <- tnr("mbo") #vai melhor 
+tuner$optimize(instance)
+
+
+
+# Os resultados ficam salvos em um tibble
+as.data.table(instance$archive) %>%
+  as_tibble()
+  View()
+
+
+```
+
+#Exercício 3 - Melhorando as predições climáticas
+
+Neste exercício final, usaremos tuning para dar um passo adicional na tarefa de predizer a temparatura máxima diária em São Bernardo do Campo (SP). Para isso, use seu código da última aula e o adapte para fazer tuning de hiper-parâmetros (é possível usar o dicionário do mlr3 já com combinações prontas de hiper-parâmetros).
+
+```{r}
+link <- "https://raw.githubusercontent.com/jacobwright32/Web_Scraper_AI_Core_Project/bb4865ae568e23ab8fadb6ea58cf117df2164ef3/web%20scraping/Cleaned%20Data/Brazil_Sao%20Bernardo%20Do%20Campo_Cleaned.csv"
+
+
+dados <- readr::read_csv(link) %>% 
+  mutate_if(is.character, as.factor) %>% 
+  mutate(id =1:n()) %>% 
+  mutate(lag_max_temp = lag(maximum_temprature)) %>%  #lag antes da base de validação
+  dplyr::select(-c('date', 'country', 'city', 'wind_direction')) %>% 
+  na.omit()
+  
+
+tsk <- as_task_regr(maximum_temprature ~., data = dados)
+
+gmlnet<- lts(lrn("regr.glmnet")) # ou regr.kknn
+
+gr <- po("scale") %>>% 
+  po("encode") %>>% 
+  gmlnet %>%
+  as_learner()
+
+#Criamos uma instância 
+instance <- ti(
+  task = tsk,
+  learner = gr,
+  resampling = rsmp("repeated_cv", folds = 10, repeats = 2),
+  measures = msr("regr.rmse"), #modelo precisa retornar probabilidade
+  terminator = trm("evals",  n_evals = 5)
+)
+
+#Tuning
+tuner <- tnr("mbo") #vai melhor 
+tuner$optimize(instance)
+
+
+
+# Os resultados ficam salvos em um tibble
+as.data.table(instance$archive) %>%
+  as_tibble()
+  View()
+
+
+```
+
+
+Ao final, valide a sua melhor pipeline com dados de Campinas:
+
+```{r}
+campinas <- "https://raw.githubusercontent.com/jacobwright32/Web_Scraper_AI_Core_Project/bb4865ae568e23ab8fadb6ea58cf117df2164ef3/web%20scraping/Cleaned%20Data/Brazil_Campinas_Cleaned.csv"
+campinas <- readr::read_csv(campinas)
+
+
+```
+
+
